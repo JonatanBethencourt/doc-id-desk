@@ -1,0 +1,1275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Doc ID Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<style>
+:root{
+  --bg:#F2F4F7; --surface:#FFFFFF; --sunk:#F7F8FA; --ink:#15223A; --muted:#5A6578; --line:#D8DDE6;
+  --accent:#22508F; --accent-hover:#1B4178; --accent-ink:#FFFFFF; --accent-soft:#E6EEF8;
+  --ok:#1D7552; --ok-bg:#E4F3EC; --warn:#935A08; --warn-bg:#FFF3DC; --bad:#AD2A20; --bad-bg:#FCEAE8;
+  --chip:#E9EDF3; --shadow:0 12px 40px rgba(18,31,56,.18);
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+  --bg:#0F141D; --surface:#171F2D; --sunk:#131A26; --ink:#E6EBF3; --muted:#9BA6B7; --line:#2A3547;
+  --accent:#86ABE6; --accent-hover:#A3C0EE; --accent-ink:#0E1522; --accent-soft:#1E2B42;
+  --ok:#62C99D; --ok-bg:#15302A; --warn:#F0B75C; --warn-bg:#33270F; --bad:#F2928A; --bad-bg:#3A1E1C;
+  --chip:#222D40; --shadow:0 12px 40px rgba(0,0,0,.5); color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#0F141D; --surface:#171F2D; --sunk:#131A26; --ink:#E6EBF3; --muted:#9BA6B7; --line:#2A3547;
+  --accent:#86ABE6; --accent-hover:#A3C0EE; --accent-ink:#0E1522; --accent-soft:#1E2B42;
+  --ok:#62C99D; --ok-bg:#15302A; --warn:#F0B75C; --warn-bg:#33270F; --bad:#F2928A; --bad-bg:#3A1E1C;
+  --chip:#222D40; --shadow:0 12px 40px rgba(0,0,0,.5); color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.5 "Public Sans",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;-webkit-text-size-adjust:100%}
+button,input,select,textarea{font:inherit;color:inherit}
+img{max-width:100%}
+.num{font-variant-numeric:tabular-nums lining-nums}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* Top bar */
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--surface);border-bottom:1px solid var(--line)}
+.top-in{max-width:1180px;margin:0 auto;padding:10px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:10px;margin-right:auto}
+.brand b{font-size:18px;font-weight:700;letter-spacing:-.01em}
+.brand span{color:var(--muted);font-size:13px}
+.tabs{display:flex;gap:4px}
+.tab{border:0;background:none;padding:8px 12px;border-radius:8px;cursor:pointer;color:var(--muted);font-weight:500}
+.tab:hover{background:var(--chip);color:var(--ink)}
+.tab[aria-current="page"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.who{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.who img{width:26px;height:26px;border-radius:50%}
+.role{background:var(--chip);border-radius:999px;padding:2px 9px;font-size:12px;color:var(--ink)}
+
+main{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
+h1{font-size:24px;line-height:1.2;margin:0 0 4px;font-weight:700;letter-spacing:-.015em}
+h2{font-size:17px;margin:0 0 12px;font-weight:650}
+h3{font-size:15px;margin:0 0 8px;font-weight:650}
+.lede{color:var(--muted);margin:0 0 20px;max-width:70ch}
+.muted{color:var(--muted)}
+.small{font-size:13px}
+
+/* Banners */
+.banners{max-width:1180px;margin:0 auto;padding:12px 20px 0;display:grid;gap:8px}
+.banners:empty{display:none}
+.banner{display:flex;gap:12px;align-items:flex-start;border-radius:10px;padding:11px 14px;border:1px solid transparent}
+.banner.low{background:var(--warn-bg);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+.banner.empty,.banner.err{background:var(--bad-bg);color:var(--bad);border-color:color-mix(in srgb,var(--bad) 30%,transparent)}
+.banner.info{background:var(--accent-soft);color:var(--accent)}
+.banner p{margin:0;color:var(--ink)}
+.banner strong{color:inherit}
+.banner .ico{flex:none;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:13px;background:currentColor}
+.banner .ico i{color:var(--surface);font-style:normal}
+
+/* Cards and forms */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px}
+.stack{display:grid;gap:18px}
+.req-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:20px;align-items:start}
+@media (max-width:880px){.req-grid{grid-template-columns:minmax(0,1fr)}}
+.field{display:grid;gap:6px}
+.field>label,.legend{font-weight:600;font-size:14px}
+.hint{font-size:13px;color:var(--muted)}
+input[type=text],input[type=email],input[type=number],input[type=date],input[type=search],select,textarea{
+  width:100%;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 11px;min-height:40px}
+textarea{min-height:72px;resize:vertical}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+input:disabled,select:disabled{opacity:.6}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;padding:3px;background:var(--sunk);flex-wrap:wrap}
+.seg label{position:relative;cursor:pointer}
+.seg input{position:absolute;opacity:0;inset:0;cursor:pointer}
+.seg span{display:block;padding:7px 14px;border-radius:7px;font-weight:500;color:var(--muted)}
+.seg input:checked+span{background:var(--surface);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.12);font-weight:600}
+.seg input:focus-visible+span{outline:2px solid var(--accent)}
+.seg input:disabled+span{opacity:.45;cursor:not-allowed}
+.lines{display:grid;gap:8px}
+.line{display:grid;grid-template-columns:minmax(0,1fr) 96px 40px;gap:8px;align-items:center}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:8px;border:1px solid var(--line);background:var(--surface);padding:8px 14px;min-height:40px;cursor:pointer;font-weight:600;white-space:nowrap}
+.btn:hover{background:var(--chip)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover{background:var(--accent-hover)}
+.btn.danger{color:var(--bad)}
+.btn.ghost{border-color:transparent;background:none;color:var(--accent)}
+.btn.ghost:hover{background:var(--accent-soft)}
+.btn.icon{padding:0;width:40px}
+.btn.big{min-height:48px;font-size:16px;padding:10px 20px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.spacer{flex:1}
+.err-text{color:var(--bad);font-size:14px;margin:0}
+
+/* Category panel */
+.pool-name{font-weight:650;font-size:16px}
+.pool-count{font-size:44px;font-weight:700;line-height:1;letter-spacing:-.02em}
+.pool-count small{font-size:15px;font-weight:500;color:var(--muted);letter-spacing:0;margin-left:6px}
+.gauge{height:10px;border-radius:999px;background:var(--chip);overflow:hidden;display:flex}
+.gauge i{display:block;height:100%}
+.gauge .used{background:var(--muted);opacity:.55}
+.gauge .left{background:var(--ok)}
+.gauge.low .left{background:var(--warn)}
+.gauge.empty .left{background:var(--bad)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:14px;margin:0}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0}
+.notes{margin:0;padding-left:18px;font-size:14px}
+
+/* Chips */
+.chip{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12.5px;font-weight:600;background:var(--chip);white-space:nowrap}
+.chip.Assigned{background:var(--ok-bg);color:var(--ok)}
+.chip.Reserved{background:var(--warn-bg);color:var(--warn)}
+.chip.Cancelled{background:var(--bad-bg);color:var(--bad)}
+.chip.ok{background:var(--ok-bg);color:var(--ok)}
+.chip.low{background:var(--warn-bg);color:var(--warn)}
+.chip.empty{background:var(--bad-bg);color:var(--bad)}
+
+/* Tables */
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--muted);background:var(--sunk);white-space:nowrap;font-size:13px}
+tr:last-child td{border-bottom:0}
+td.id{font-weight:600;white-space:nowrap}
+td .sub{display:block;font-weight:400;color:var(--muted);font-size:12.5px}
+tr.clickable{cursor:pointer}
+tr.clickable:hover td{background:var(--sunk)}
+tr.detail td{background:var(--sunk)}
+.filters{display:grid;grid-template-columns:minmax(200px,2fr) repeat(3,minmax(140px,1fr));gap:10px}
+.filters2{display:grid;grid-template-columns:repeat(2,minmax(140px,190px)) 1fr;gap:10px;align-items:end}
+@media (max-width:760px){.filters{grid-template-columns:1fr 1fr}.filters .q{grid-column:1/-1}.filters2{grid-template-columns:1fr 1fr}}
+.hist{margin:0;padding:0;list-style:none;display:grid;gap:6px;font-size:13.5px}
+.hist li{display:grid;grid-template-columns:170px 1fr;gap:10px}
+@media (max-width:600px){.hist li{grid-template-columns:1fr}}
+
+/* Admin */
+.subtabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid var(--line);padding-bottom:0}
+.subtab{border:0;background:none;padding:9px 12px;cursor:pointer;color:var(--muted);font-weight:500;border-bottom:2px solid transparent;margin-bottom:-1px}
+.subtab[aria-current="page"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+.cat-list{display:grid;gap:12px}
+.cat{display:grid;gap:12px}
+.cat-head{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap}
+.stats{display:flex;gap:22px;flex-wrap:wrap}
+.stat b{display:block;font-size:22px;font-weight:700;line-height:1.1}
+.stat span{font-size:12.5px;color:var(--muted)}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:30px;text-align:center;background:var(--sunk);cursor:pointer}
+.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+.drop p{margin:6px 0 0}
+.idlist{display:flex;flex-wrap:wrap;gap:6px 14px;max-height:260px;overflow:auto;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--sunk);font-size:13.5px}
+.empty-state{text-align:center;padding:36px 20px;color:var(--muted)}
+.empty-state h2{color:var(--ink)}
+
+/* Modal */
+.overlay{position:fixed;inset:0;background:rgba(10,16,28,.55);z-index:50;display:grid;place-items:center;padding:16px;padding-top:calc(16px + env(safe-area-inset-top,0px));padding-bottom:calc(16px + env(safe-area-inset-bottom,0px))}
+.dialog{background:var(--surface);border-radius:14px;box-shadow:var(--shadow);width:100%;max-width:580px;max-height:100%;display:flex;flex-direction:column;overflow:hidden}
+.dialog header{padding:20px 22px 12px}
+.dialog header h2{font-size:19px;margin:0 0 4px;line-height:1.3}
+.dialog .body{padding:4px 22px 16px;overflow:auto;display:grid;gap:10px}
+.dialog footer{padding:14px 22px;border-top:1px solid var(--line);display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end;background:var(--sunk)}
+.ticket{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:stretch;border:1px solid var(--line);border-radius:10px;background:var(--surface);overflow:hidden}
+.ticket .stub{padding:10px 12px;background:var(--sunk);border-right:2px dashed var(--line);display:grid;align-content:center;font-size:12.5px;color:var(--muted);width:124px}
+.ticket .stub b{color:var(--ink);font-size:13px;font-weight:600}
+.ticket .val{padding:10px 14px;display:grid;align-content:center;min-width:0}
+.ticket .id{font-size:clamp(24px,6vw,32px);font-weight:700;letter-spacing:.015em;line-height:1.15;user-select:all;overflow-wrap:anywhere}
+.ticket .id.meps-raw{font-family:"MEPS Bookman Universal",serif;font-weight:400}
+.ticket .fmt{font-size:12px;color:var(--muted)}
+.ticket .act{display:grid;align-content:center;padding:10px 12px 10px 0}
+.copied{background:var(--ok-bg)!important;color:var(--ok)!important;border-color:transparent!important}
+@media (max-width:480px){.ticket{grid-template-columns:minmax(0,1fr) auto}.ticket .stub{grid-column:1/-1;border-right:0;border-bottom:2px dashed var(--line);width:auto;display:flex;gap:8px}}
+@keyframes stamp{from{transform:scale(1.06);opacity:0}to{transform:none;opacity:1}}
+.ticket{animation:stamp .22s ease-out both}
+@media (prefers-reduced-motion:reduce){.ticket{animation:none}}
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--surface);padding:10px 16px;border-radius:9px;font-weight:500;z-index:60;max-width:calc(100% - 32px);box-shadow:var(--shadow)}
+.toast:empty{display:none}
+.spin{width:16px;height:16px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:rot .7s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+.signin{max-width:440px;margin:40px auto}
+.signin .or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px}
+.signin .or::before,.signin .or::after{content:"";flex:1;height:1px;background:var(--line)}
+.google{width:100%}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+</style>
+</head>
+<body>
+<header class="top"><div class="top-in">
+  <div class="brand"><b>Doc ID Desk</b><span>Document ID allocation</span></div>
+  <nav class="tabs" id="tabs" aria-label="Sections"></nav>
+  <div class="who" id="who"></div>
+</div></header>
+<div class="banners" id="banners"></div>
+<main id="main"></main>
+<div id="modal-root"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script>
+'use strict';
+/* ---------- Constants ---------- */
+const POOL_CHUNK = 500;          // Doc IDs per pool document
+const REC_CHUNK = 100;           // assignment records per ledger document
+const LOCK_TTL = 15000;          // category lock lease (ms)
+const MAX_PER_REQUEST = 100;
+const MAX_RANGE = 10000;        // Doc IDs per range
+const DEFAULT_TYPES = ['Script','Hosting Document','Lead Sheet'];
+const STATUSES = ['Reserved','Assigned','Cancelled'];
+const STATUS_HELP = {Reserved:'Waiting for Done', Assigned:'Used', Cancelled:'Cancelled — never reused'};
+const TAB_ID = Math.random().toString(36).slice(2,10);
+
+/* ---------- MEPS character handling ----------
+   In the source spreadsheets the MEPS column is text in the "MEPS Bookman Universal"
+   font, stored as private-use characters: 1-9 = U+F734..U+F73C, 0 = U+F73D.
+   We always store and copy the original characters; decoding is only for display/search. */
+const MEPS_MAP = {'\uF73D':'0'};
+for (let d=1; d<=9; d++) MEPS_MAP[String.fromCharCode(0xF733+d)] = String(d);
+function mepsDigits(s){ let o=''; for (const ch of String(s||'')) o += MEPS_MAP[ch] ?? (/[\uE000-\uF8FF]/.test(ch) ? '?' : ch); return o; }
+function toMeps(digits){ let o=''; for (const ch of String(digits)) o += ch==='0' ? '\uF73D' : (ch>='1'&&ch<='9' ? String.fromCharCode(0xF733+Number(ch)) : ch); return o; }
+const MEPS_FONT = (()=>{ try{ const c=document.createElement('canvas').getContext('2d'); const t='\uF734\uF735\uF736\uF737\uF73D\uF73C';
+  c.font='40px monospace'; const a=c.measureText(t).width; c.font='40px "MEPS Bookman Universal", monospace'; return Math.abs(c.measureText(t).width-a)>0.5; }catch(e){ return false; } })();
+
+/* ---------- Small helpers ---------- */
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+const rid = (p='') => p + Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+const nowIso = () => new Date().toISOString();
+const slug = s => (String(s).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,40) || 'category');
+const plural = (n, one, many) => `${n.toLocaleString()} ${n===1?one:(many||one+'s')}`;
+const fmtDate = iso => iso ? new Date(iso).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'}) : '';
+const esc = s => String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+class AppError extends Error { constructor(msg, extra){ super(msg); Object.assign(this, extra||{}); } }
+function el(tag, attrs, ...kids){
+  const n = document.createElement(tag); let val;
+  if (attrs) for (const [k,v] of Object.entries(attrs)){
+    if (v==null || v===false) continue;
+    if (k==='class') n.className=v;
+    else if (k==='text') n.textContent=v;
+    else if (k==='value') val=v;
+    else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    else if (k==='checked'||k==='disabled'||k==='selected'||k==='multiple') n[k]=!!v;
+    else n.setAttribute(k, v===true?'':v);
+  }
+  for (const k of kids.flat(Infinity)){ if (k==null||k===false) continue; n.append(k instanceof Node ? k : document.createTextNode(String(k))); }
+  if (val!==undefined) n.value=val;
+  return n;
+}
+function opt(value, label, selected, disabled){ return el('option',{value, selected, disabled}, label); }
+let toastT=0;
+function toast(msg, ms=3200){ const t=document.getElementById('toast'); t.textContent=msg; clearTimeout(toastT); toastT=setTimeout(()=>t.textContent='', ms); }
+
+/* ---------- State ---------- */
+const S = {
+  db:null, auth:null, downloads:true, uid:null, me:{email:'',name:''}, isAdmin:false, canWrite:true, fatal:null, ready:false,
+  phase:'loading', authErr:'', authMsg:'', members:{}, unsubs:[],
+  cats:{}, pools:{}, alloc:{}, rec:{}, config:{},
+  loaded:{cats:false,pools:false,alloc:false,rec:false,config:false},
+  view:'request', adminTab:'categories',
+  form:{catId:'', format:'regular', mnemonic:'', lines:[{type:'', qty:1}]},
+  formErr:'', busy:false, busyMsg:'',
+  filters:{q:'', catId:'', docType:'', status:'', from:'', to:''}, showLimit:200, expanded:new Set(),
+  imports:[], range:{target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, msg:'', busy:false, done:''}, openCats:new Set(), showAllIds:new Set(),
+  d:null,
+};
+const docTypes = (all=false) => {
+  const t = Array.isArray(S.config.app?.docTypes) ? S.config.app.docTypes : DEFAULT_TYPES.map(n=>({name:n, active:true}));
+  return all ? t : t.filter(x=>x.active!==false);
+};
+
+/* ---------- Derived data ---------- */
+function derive(){
+  if (S.d) return S.d;
+  const pools={}, stats={}, records=[], names={};
+  if (S.me.email) names[S.me.email]=S.me.name||S.me.email;
+  for (const [cid,c] of Object.entries(S.cats)){
+    const arr=[]; let complete=true;
+    for (const ch of c.chunks||[]){ const p=S.pools[ch.id]; if (!p){ complete=false; break; } for (const e of poolArr(p)) arr.push(e); }
+    pools[cid]={arr, complete};
+  }
+  for (const r of Object.values(S.rec)) for (const e of Object.values(r.entries||{})){
+    records.push(e);
+    if (e.reservedBy && e.reservedByName) names[e.reservedBy]=e.reservedByName;
+    if (e.confirmedBy && e.confirmedByName) names[e.confirmedBy]=e.confirmedByName;
+    for (const h of e.history||[]) if (h.by && h.byName && !names[h.by]) names[h.by]=h.byName;
+  }
+  records.sort((a,b)=> String(b.reservedAt||'').localeCompare(String(a.reservedAt||'')) || (b.idx-a.idx));
+  for (const [cid,c] of Object.entries(S.cats)){
+    const s = {total:c.total||0, Reserved:0, Assigned:0, Cancelled:0, maxIdx:-1, byType:{}};
+    stats[cid]=s;
+  }
+  for (const e of records){
+    const s = stats[e.catId]; if (!s) continue;
+    s[e.status] = (s[e.status]||0)+1; if (e.idx>s.maxIdx) s.maxIdx=e.idx;
+    const bt = s.byType[e.docType] ||= {Reserved:0,Assigned:0,Cancelled:0}; bt[e.status]=(bt[e.status]||0)+1;
+  }
+  for (const [cid,s] of Object.entries(stats)){
+    const next = Math.max(S.alloc[cid]?.next||0, s.maxIdx+1);
+    s.next=next; s.remaining=Math.max(0, s.total-next); s.issued=next;
+    const c=S.cats[cid]; s.threshold = Number.isFinite(c.lowThreshold) ? c.lowThreshold : Math.max(10, Math.round(s.total*0.1));
+    s.level = s.remaining===0 ? 'empty' : (s.remaining<=s.threshold ? 'low' : 'ok');
+  }
+  return (S.d={pools,stats,records,names});
+}
+const catName = id => S.cats[id]?.name || 'Unknown category';
+const activeCats = () => Object.entries(S.cats).filter(([,c])=>!c.archived).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
+const allCats = () => Object.entries(S.cats).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
+
+/* ---------- People ---------- */
+const myName = () => S.me.name || S.me.email;
+function nameOf(id){
+  if (!id) return 'Import';
+  return S.members[id]?.name || derive().names[id] || id;
+}
+async function namesFor(){ return nameOf; }
+
+/* ---------- Database writes ----------
+   Every hand-out runs inside a Firestore transaction: the category's pointer and the
+   ledger are read and written atomically, and Firestore retries automatically if two
+   people collide, so the same Doc ID can never be given to two requests. The security
+   rules also refuse any write that would move the pointer backwards. */
+const recKey = idx => 'i'+idx;
+const recRefFor = (catId, c) => S.db.doc('rec/'+catId+'__r'+c);
+function poolArr(p){ const r=p.regs||[], m=p.meps||[], out=new Array(r.length); for (let i=0;i<r.length;i++) out[i]=[r[i], m[i]||'']; return out; }
+async function freshPool(cat){
+  const arr=[];
+  for (const ch of cat.chunks||[]){
+    let p = S.pools[ch.id];
+    if (!p){ const snap = await S.db.doc('pool/'+ch.id).get(); if (!snap.exists) throw new AppError('Part of this category’s Doc ID list could not be loaded. Reload the page and try again.'); p = snap.data(); }
+    for (const e of poolArr(p)) arr.push(e);
+  }
+  return arr;
+}
+
+/* Hand out the next free Doc IDs. lines: [{docType, qty}] */
+async function allocate({catId, lines, mnemonic, format}){
+  const count = lines.reduce((a,l)=>a+l.qty,0);
+  const reqId = rid('q');
+  const catRef = S.db.doc('categories/'+catId), allocRef = S.db.doc('alloc/'+catId);
+  const c0 = await catRef.get(); if (!c0.exists) throw new AppError('This category no longer exists.');
+  let pool = await freshPool(c0.data());
+  return S.db.runTransaction(async tx=>{
+    const cs = await tx.get(catRef);
+    if (!cs.exists) throw new AppError('This category no longer exists.');
+    const cat = cs.data();
+    if (cat.archived) throw new AppError('This category has been retired by an administrator.');
+    if ((cat.total||0) !== pool.length) pool = await freshPool(cat);
+    const as = await tx.get(allocRef);
+    let next = as.exists ? (as.data().next||0) : 0;
+    // Safety net: never trust the pointer alone — skip past anything already in the ledger.
+    const seen = {};
+    for (let guard=0; guard<50; guard++){
+      let bumped=false;
+      const first=Math.floor(next/REC_CHUNK), last=Math.max(first, Math.floor((Math.min(next+count, pool.length)-1)/REC_CHUNK));
+      for (let c=first; c<=last; c++){
+        if (!seen[c]) seen[c] = await tx.get(recRefFor(catId,c));
+        const ents = seen[c].exists ? (seen[c].data().entries||{}) : {};
+        for (const e of Object.values(ents)) if (e.idx>=next){ next=e.idx+1; bumped=true; }
+      }
+      if (!bumped) break;
+    }
+    const remaining = pool.length - next;
+    if (remaining < count) throw new AppError(remaining===0
+      ? `There are no Doc IDs left in ${cat.name}. An administrator needs to add a new range.`
+      : `Only ${plural(remaining,'Doc ID')} left in ${cat.name}, but you asked for ${count}. Lower the number or ask an administrator for a new range.`, {remaining});
+    const at = nowIso(); const items=[]; let i=next;
+    for (const l of lines) for (let k=0;k<l.qty;k++,i++){
+      const [regular, meps] = pool[i];
+      items.push({idx:i, catId, regular:String(regular), meps:meps?String(meps):'', format, mnemonic, docType:l.docType,
+        status:'Reserved', reqId, reservedAt:at, reservedBy:S.uid, reservedByName:myName(),
+        history:[{at, by:S.uid, byName:myName(), action:'Handed out', note:`${l.docType} for project ${mnemonic}`}]});
+    }
+    const byChunk={};
+    for (const it of items) (byChunk[Math.floor(it.idx/REC_CHUNK)] ||= {})[recKey(it.idx)] = it;
+    for (const [c, entries] of Object.entries(byChunk)) tx.set(recRefFor(catId,c), {catId, chunk:Number(c), entries}, {merge:true});
+    tx.set(allocRef, {next:i, updatedAt:at, updatedBy:S.uid});
+    return {cat, catId, items, reqId};
+  });
+}
+
+/* Update a set of records atomically. mutate(entry) returns the new entry or null to skip. */
+async function mutateRecords(refs, mutate){
+  const byCat={};
+  for (const r of refs) (byCat[r.catId] ||= []).push(r.idx);
+  for (const [catId, idxs] of Object.entries(byCat)){
+    await S.db.runTransaction(async tx=>{
+      const byChunk={};
+      for (const idx of idxs) (byChunk[Math.floor(idx/REC_CHUNK)] ||= []).push(idx);
+      const snaps={};
+      for (const c of Object.keys(byChunk)) snaps[c] = await tx.get(recRefFor(catId,c));
+      for (const [c, list] of Object.entries(byChunk)){
+        if (!snaps[c].exists) continue;
+        const ents = snaps[c].data().entries||{}; const patch={};
+        for (const idx of list){ const e = ents[recKey(idx)]; if (!e) continue; const ne = mutate(JSON.parse(JSON.stringify(e))); if (ne) patch[recKey(idx)] = ne; }
+        if (Object.keys(patch).length) tx.set(recRefFor(catId,c), {entries:patch}, {merge:true});
+      }
+    });
+  }
+}
+function setStatus(refs, status, action, note){
+  const at=nowIso();
+  return mutateRecords(refs, e=>{
+    if (e.status===status) return null;
+    e.status=status;
+    if (status==='Assigned'){ e.confirmedAt=at; e.confirmedBy=S.uid; e.confirmedByName=myName(); }
+    if (status==='Cancelled'){ e.cancelledAt=at; e.cancelledBy=S.uid; e.cancelledByName=myName(); }
+    e.history=[...(e.history||[]), {at, by:S.uid, byName:myName(), action, note:note||''}];
+    return e;
+  });
+}
+
+/* ---------- Spreadsheet import ---------- */
+function looksLikeId(s){ return /^[A-Za-z0-9][A-Za-z0-9\-_.\/]{0,39}$/.test(s) && /\d/.test(s); }
+function parseWorkbook(wb, fileName){
+  const sheets = wb.SheetNames.map(n=>({n, ws:wb.Sheets[n]})).filter(s=>s.ws && s.ws['!ref']);
+  if (!sheets.length) throw new AppError('This file has no data in it.');
+  const {n:sheetName, ws} = sheets[0];
+  const R = XLSX.utils.decode_range(ws['!ref']);
+  const text = (r,c) => {
+    const cell = ws[XLSX.utils.encode_cell({r,c})];
+    if (!cell || cell.v==null) return '';
+    let s;
+    if (cell.t==='n'){ s = cell.w!=null ? String(cell.w) : String(cell.v); if (/e\+/i.test(s) && Number.isInteger(cell.v)) s = String(cell.v); }
+    else if (cell.t==='s') s = String(cell.v);
+    else s = cell.w!=null ? String(cell.w) : String(cell.v);
+    return s.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g,'');
+  };
+  const r0 = R.s.r; let name=''; const notes=[];
+  for (let c=R.s.c;c<=R.e.c;c++){ const t=text(r0,c); if (!t) continue; if (!name) name=t; else notes.push(t); }
+  let hdr=-1, regCol=-1, mepsCol=-1;
+  for (let r=r0+1; r<=Math.min(R.e.r, r0+6) && hdr<0; r++){
+    for (let c=R.s.c;c<=R.e.c;c++){ const t=text(r,c).toLowerCase(); if (/regular/.test(t)){regCol=c;hdr=r;} else if (/meps/.test(t)){mepsCol=c;hdr=r;} }
+  }
+  if (hdr<0){ // no header row: find columns by content
+    hdr=r0;
+    for (let c=R.s.c;c<=R.e.c && (regCol<0||mepsCol<0);c++){
+      for (let r=r0+1;r<=Math.min(R.e.r,r0+20);r++){ const t=text(r,c); if (!t) continue;
+        if (mepsCol<0 && /[\uE000-\uF8FF]/.test(t)) { mepsCol=c; break; }
+        if (regCol<0 && looksLikeId(t)) { regCol=c; break; } }
+    }
+  }
+  if (regCol<0 && mepsCol<0) throw new AppError('Couldn’t find a column of Doc IDs. Put the category name in A1 and the Doc IDs in a column below it.');
+  const headerRegular = regCol>=0 && hdr>r0 ? text(hdr,regCol) : 'Regular Numbers';
+  const headerMeps = mepsCol>=0 && hdr>r0 ? text(hdr,mepsCol) : 'MEPS Numbers';
+  const rows=[]; const seen=new Set();
+  for (let r=hdr+1;r<=R.e.r;r++){
+    const reg = regCol>=0 ? text(r,regCol) : ''; const meps = mepsCol>=0 ? text(r,mepsCol) : '';
+    const others=[]; for (let c=R.s.c;c<=R.e.c;c++){ if (c===regCol||c===mepsCol) continue; const t=text(r,c); if (t) others.push(t); }
+    if (!reg && !meps){ notes.push(...others); continue; }
+    if (!meps && !looksLikeId(reg)){ notes.push([reg,...others].join(' ')); continue; }
+    notes.push(...others);
+    const row = {reg: reg || mepsDigits(meps), meps, line:r+1, flags:[]};
+    if (!reg) row.flags.push('noreg');
+    if (mepsCol>=0 && !meps) row.flags.push('nomeps');
+    if (reg && meps && mepsDigits(meps)!==reg) row.flags.push('mismatch');
+    if (seen.has(row.reg)) row.dup=true; seen.add(row.reg);
+    rows.push(row);
+  }
+  if (!rows.length) throw new AppError('No Doc IDs were found under the header row.');
+  return {name: name || fileName.replace(/\.[^.]+$/,''), notes:[...new Set(notes)], rows, hasMeps: mepsCol>=0,
+          headerRegular, headerMeps, sheetName, extraSheets: sheets.length-1};
+}
+function checkOverlap(parsed){
+  const {pools} = derive(); const owner = new Map();
+  for (const [cid,p] of Object.entries(pools)) for (const [reg] of p.arr) owner.set(String(reg), cid);
+  const hits={};
+  for (const row of parsed.rows){ row.overlap = owner.get(row.reg) || null; if (row.overlap) hits[row.overlap]=(hits[row.overlap]||0)+1; }
+  parsed.overlapByCat = hits;
+}
+async function readFiles(files){
+  if (!window.XLSX){ toast('The spreadsheet reader didn’t load. Check your connection and reload the page.'); return; }
+  for (const f of files){
+    const imp = {key:rid('f'), fileName:f.name, status:'ready', msg:'', target:'new'};
+    try {
+      const buf = await f.arrayBuffer();
+      const wb = XLSX.read(buf, {type:'array', cellText:true, cellNF:true});
+      imp.parsed = parseWorkbook(wb, f.name); checkOverlap(imp.parsed); imp.name = imp.parsed.name;
+      const same = Object.entries(S.cats).find(([,c])=>c.name.trim().toLowerCase()===imp.name.trim().toLowerCase());
+      if (same) imp.sameNameAs = same[0];
+    } catch(e){ imp.status='error'; imp.msg = e instanceof AppError ? e.message : 'This file couldn’t be read as a spreadsheet.'; }
+    S.imports.unshift(imp);
+  }
+  schedule();
+}
+async function runImport(imp){
+  const p = imp.parsed; const ids = p.rows.filter(r=>!r.dup && !r.overlap).map(r=>[r.reg, r.meps||'']);
+  if (!ids.length) throw new AppError('Every one of these Doc IDs is already in the system, so there is nothing to add.');
+  const at = nowIso();
+  const source = {name:imp.fileName, importedAt:at, importedBy:S.uid, importedByName:myName(), count:ids.length, first:ids[0][0], last:ids[ids.length-1][0]};
+  const makeChunks = catId => { const chunks=[], docs=[];
+    for (let i=0;i<ids.length;i+=POOL_CHUNK){ const id=catId+'__p'+rid(); const part=ids.slice(i,i+POOL_CHUNK);
+      docs.push([id, {catId, regs:part.map(x=>x[0]), meps:part.map(x=>x[1])}]); chunks.push({id, count:part.length}); }
+    return {chunks, docs}; };
+  if (imp.target==='new'){
+    const name = (imp.name||'').trim(); if (!name) throw new AppError('Give the category a name.');
+    const catId = 'c-'+slug(name)+'-'+Math.random().toString(36).slice(2,6);
+    const {chunks, docs} = makeChunks(catId);
+    const batch = S.db.batch();
+    for (const [id,d] of docs) batch.set(S.db.doc('pool/'+id), d);
+    batch.set(S.db.doc('categories/'+catId), {name, sourceFiles:[source], notes:p.notes, hasMeps:p.hasMeps, headerRegular:p.headerRegular,
+      headerMeps:p.headerMeps, total:ids.length, chunks, createdAt:at, createdBy:S.uid, lowThreshold:null, archived:false});
+    await batch.commit();
+    return catId;
+  } else {
+    const catId = imp.target; const catRef = S.db.doc('categories/'+catId);
+    await S.db.runTransaction(async tx=>{
+      const snap = await tx.get(catRef); if (!snap.exists) throw new AppError('That category no longer exists.');
+      const c = snap.data(); const {chunks, docs} = makeChunks(catId);
+      for (const [id,d] of docs) tx.set(S.db.doc('pool/'+id), d);
+      tx.update(catRef, {total:(c.total||0)+ids.length, chunks:[...(c.chunks||[]), ...chunks], sourceFiles:[...(c.sourceFiles||[]), source],
+        notes:[...new Set([...(c.notes||[]), ...p.notes])], hasMeps: !!(c.hasMeps||p.hasMeps)});
+    });
+    return catId;
+  }
+}
+
+/* ---------- Range builder ---------- */
+function parseRangeList(text, width){
+  const out=[]; if (!text.trim()) return {list:out};
+  for (const tok of text.split(/[,;\n]+/).map(t=>t.trim()).filter(Boolean)){
+    const m = tok.match(/^(\d+)\s*(?:-|–|to)\s*(\d+)$/i) || tok.match(/^(\d+)$/);
+    if (!m) return {error:`“${tok}” isn’t a number or a range like 902026900-902026999.`};
+    const a=BigInt(m[1]), b=BigInt(m[2]||m[1]);
+    out.push(a<=b?[a,b]:[b,a]);
+  }
+  return {list:out};
+}
+function buildRange(R){
+  const first=R.first.trim(), last=R.last.trim();
+  if (!first || !last) return {empty:true};
+  if (!/^\d+$/.test(first) || !/^\d+$/.test(last)) return {error:'Doc IDs in a range must be whole numbers, digits only.'};
+  if (first.length!==last.length) return {error:`The first and last Doc IDs need the same number of digits (${first.length} and ${last.length}).`};
+  const a=BigInt(first), b=BigInt(last);
+  if (b<a) return {error:'The last Doc ID must be the same as or higher than the first.'};
+  const ex = parseRangeList(R.exclude, first.length); if (ex.error) return {error:ex.error};
+  const span = b-a+1n;
+  if (span > BigInt(MAX_RANGE*3)) return {error:`That range covers ${span.toLocaleString()} numbers. Add ranges of up to ${MAX_RANGE.toLocaleString()} Doc IDs at a time.`};
+  const rows=[]; let skipped=0;
+  for (let n=a; n<=b; n++){
+    const reg = n.toString().padStart(first.length,'0');
+    const tail = Number(reg.slice(-3));
+    if ((R.skipTop && tail>=900) || ex.list.some(([x,y])=>n>=x && n<=y)){ skipped++; continue; }
+    rows.push({reg, meps:R.meps?toMeps(reg):'', flags:[]});
+  }
+  if (!rows.length) return {error:'Every number in this range is left out, so there is nothing to add.'};
+  if (rows.length > MAX_RANGE) return {error:`That range has ${rows.length.toLocaleString()} Doc IDs. Add up to ${MAX_RANGE.toLocaleString()} at a time.`};
+  const notes = R.notes.split('\n').map(t=>t.trim()).filter(Boolean);
+  const parsed = {name:R.name.trim(), notes, rows, hasMeps:R.meps, headerRegular:'Regular Numbers', headerMeps:'MEPS Numbers', sheetName:'', extraSheets:0};
+  checkOverlap(parsed);
+  return {parsed, skipped, first, last};
+}
+
+/* ---------- Clipboard ---------- */
+async function copyIds(raws, isMeps){
+  const plain = raws.join('\n');
+  const html = raws.map(r => isMeps ? `<span style="font-family:'MEPS Bookman Universal'">${esc(r)}</span>` : esc(r)).join('<br>');
+  try { if (isMeps && navigator.clipboard && window.ClipboardItem){
+      await navigator.clipboard.write([new ClipboardItem({'text/plain':new Blob([plain],{type:'text/plain'}),'text/html':new Blob([html],{type:'text/html'})})]); return true; } } catch(e){}
+  try { if (navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(plain); return true; } } catch(e){}
+  try {
+    const box = el('div',{style:`position:fixed;left:-9999px;top:0;white-space:pre;${isMeps?"font-family:'MEPS Bookman Universal'":''}`});
+    box.textContent = plain; document.body.append(box);
+    const rg=document.createRange(); rg.selectNodeContents(box); const sel=getSelection(); sel.removeAllRanges(); sel.addRange(rg);
+    const ok = document.execCommand('copy'); sel.removeAllRanges(); box.remove(); if (ok) return true;
+  } catch(e){}
+  return false;
+}
+
+/* ---------- Rendering ---------- */
+let raf=0;
+function schedule(){ if (!raf) raf=requestAnimationFrame(()=>{ raf=0; render(); }); }
+function invalidate(){ S.d=null; }
+
+function render(){
+  const a=document.activeElement; const fid=a && a.id; let ss=null, se=null;
+  try { ss=a.selectionStart; se=a.selectionEnd; } catch(e){}
+  renderTabs(); renderWho(); renderBanners();
+  const main=document.getElementById('main');
+  main.replaceChildren(viewNode());
+  if (fid){ const n=document.getElementById(fid); if (n && n!==document.activeElement){ n.focus({preventScroll:true}); try{ if (ss!=null) n.setSelectionRange(ss,se); }catch(e){} } }
+}
+function go(view){ S.view=view; S.formErr=''; window.scrollTo(0,0); render(); }
+function renderTabs(){
+  const t=document.getElementById('tabs');
+  if (S.phase!=='app'){ t.replaceChildren(); return; }
+  const items=[['request','Request'],['records','Records']]; if (S.isAdmin) items.push(['admin','Admin']);
+  t.replaceChildren(...items.map(([v,l])=>el('button',{class:'tab', 'aria-current':S.view===v?'page':null, onclick:()=>go(v)}, l)));
+}
+function renderWho(){
+  const w=document.getElementById('who');
+  if (!S.auth || !S.auth.currentUser){ w.replaceChildren(); return; }
+  w.replaceChildren(el('span',null, S.me.name || S.me.email),
+    S.phase==='app' ? el('span',{class:'role'}, S.isAdmin?'Administrator':'Secretary') : null,
+    el('button',{class:'btn ghost', style:'min-height:32px;padding:4px 10px', onclick:()=>S.auth.signOut()}, 'Sign out'));
+}
+function renderBanners(){
+  const b=document.getElementById('banners'); const out=[];
+  if (S.ready){
+    const {stats}=derive();
+    for (const [cid,c] of activeCats()){
+      const s=stats[cid]; if (!s) continue;
+      if (S.view==='request' && cid===S.form.catId) continue; // shown in the category panel instead
+      if (s.level==='empty') out.push(banner('empty', [el('strong',null,`${c.name} has no Doc IDs left.`),' Ask for a new range of Doc IDs for this category', S.isAdmin?' and upload it under Admin.':'.']));
+      else if (s.level==='low') out.push(banner('low', [el('strong',null,`${c.name} is running low: ${plural(s.remaining,'Doc ID')} left of ${s.total.toLocaleString()}.`),' Ask for another range of Doc IDs for this category.']));
+    }
+  }
+  b.replaceChildren(...out);
+}
+function banner(kind, content){ return el('div',{class:'banner '+kind, role: kind==='empty'||kind==='err'?'alert':null}, el('span',{class:'ico','aria-hidden':'true'}, el('i',null,'!')), el('p',null,content)); }
+
+function viewNode(){
+  if (S.phase==='config') return screen('Connect Doc ID Desk to Firebase', [el('p',null,'This copy isn’t connected to a database yet. Fill in firebase-config.js with your Firebase project’s settings, as described in README.md, then reload.')]);
+  if (S.phase==='signin') return signInNode();
+  if (S.phase==='setup') return screen('Set up Doc ID Desk', [
+    el('p',null, `No one has set up this Doc ID Desk yet. Make ${S.me.email} the first administrator? You can add other administrators and secretaries afterwards.`),
+    S.authErr ? el('p',{class:'err-text'}, S.authErr) : null,
+    el('button',{class:'btn primary big', onclick:claimSetup}, 'Make me the administrator')]);
+  if (S.phase==='noaccess') return screen('You don’t have access yet', [
+    el('p',null, S.noAccessMsg || `You’re signed in as ${S.me.email}, but this address hasn’t been added. Ask a Doc ID Desk administrator to add it under Admin, then People, and reload this page.`),
+    el('button',{class:'btn', onclick:()=>S.auth.signOut()}, 'Use a different account')]);
+  if (S.phase==='error') return screen('Doc ID Desk can’t reach its database', [el('p',null, S.errMsg || 'Check your connection and reload the page.')]);
+  if (S.phase!=='app' || !S.ready) return el('div',{class:'empty-state'}, el('div',{class:'row',style:'justify-content:center'}, el('span',{class:'spin'}), 'Loading Doc IDs…'));
+  if (S.view==='records') return recordsView();
+  if (S.view==='admin' && S.isAdmin) return adminView();
+  return requestView();
+}
+function screen(title, body){ return el('div',{class:'card signin stack'}, el('h1',null,title), body); }
+function signInNode(){
+  const mail = el('input',{id:'si-mail', type:'email', autocomplete:'email', placeholder:'name@example.org'});
+  const sendLink = async e=>{ e.preventDefault(); const em=mail.value.trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){ S.authErr='Enter a valid email address.'; render(); return; }
+    try { await S.auth.sendSignInLinkToEmail(em, {url:location.origin+location.pathname, handleCodeInApp:true});
+      try{ localStorage.setItem('docid-email', em); }catch(x){}
+      S.authErr=''; S.authMsg=`We sent a sign-in link to ${em}. Open it on this device to finish signing in.`; }
+    catch(x){ S.authErr='The sign-in link couldn’t be sent. Check that Email link sign-in is turned on in Firebase.'; }
+    render(); };
+  return el('div',{class:'card signin stack'},
+    el('div',null, el('h1',null,'Sign in to Doc ID Desk'), el('p',{class:'lede',style:'margin:0'},'Use the email address your administrator added.')),
+    el('button',{class:'btn big google', onclick:async()=>{ try{ S.authErr=''; await S.auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()); }catch(x){ if (x && x.code!=='auth/popup-closed-by-user'){ S.authErr='Google sign-in didn’t work. Try the email link instead.'; render(); } } }}, 'Sign in with Google'),
+    el('div',{class:'or'},'or get a sign-in link by email'),
+    el('form',{class:'stack', style:'gap:10px', onsubmit:sendLink},
+      el('div',{class:'field'}, el('label',{for:'si-mail'},'Email address'), mail),
+      el('button',{class:'btn primary', type:'submit'}, 'Email me a sign-in link')),
+    S.authMsg ? el('div',{class:'banner info'}, el('span',{class:'ico'}, el('i',null,'✓')), el('p',null,S.authMsg)) : null,
+    S.authErr ? el('p',{class:'err-text', role:'alert'}, S.authErr) : null);
+}
+async function claimSetup(){
+  try {
+    const batch=S.db.batch(); const at=nowIso();
+    batch.set(S.db.doc('config/setup'), {ownerEmail:S.me.email, createdAt:at});
+    batch.set(S.db.doc('members/'+S.me.email), {role:'admin', name:S.me.name||'', addedAt:at, addedBy:S.me.email});
+    await batch.commit();
+    await enterApp();
+  } catch(e){ S.authErr='Someone else has already set this up. Reload the page.'; render(); }
+}
+
+/* ----- Request view ----- */
+function requestView(){
+  const {stats, pools}=derive();
+  const cats=activeCats();
+  if (!cats.length) return el('div',{class:'card empty-state'}, el('h2',null,'No Doc ID categories yet'),
+    el('p',null, S.isAdmin ? 'Add a range of Doc IDs to create the first category.' : 'An administrator needs to upload a spreadsheet of Doc IDs first.'),
+    S.isAdmin ? el('button',{class:'btn primary', onclick:()=>{S.adminTab='range'; go('admin');}}, 'Add a range') : null);
+  const f=S.form;
+  if (!f.catId || !S.cats[f.catId] || S.cats[f.catId].archived){ const firstOk = cats.find(([id])=>stats[id]?.remaining>0) || cats[0]; f.catId = firstOk[0]; }
+  const cat=S.cats[f.catId], st=stats[f.catId];
+  if (!cat.hasMeps && f.format==='meps') f.format='regular';
+  const types=docTypes();
+  f.lines.forEach(l=>{ if (!l.type || !types.some(t=>t.name===l.type)) l.type = types[0]?.name || ''; });
+  const total=f.lines.reduce((a,l)=>a+(parseInt(l.qty,10)||0),0);
+  const prior = f.mnemonic.trim() ? derive().records.filter(r=>r.mnemonic.toLowerCase()===f.mnemonic.trim().toLowerCase() && r.status!=='Cancelled').length : 0;
+
+  const form = el('form',{class:'card stack', novalidate:true, onsubmit:e=>{e.preventDefault(); submitRequest();}},
+    el('div',null, el('h1',null,'Request Doc IDs'), el('p',{class:'lede',style:'margin:0'},'Get the next free Doc IDs for a project. Each one is recorded against the project the moment it’s handed out.')),
+    el('div',{class:'field'}, el('label',{for:'f-cat'},'Project category'),
+      el('select',{id:'f-cat', value:f.catId, onchange:e=>{f.catId=e.target.value; S.formErr=''; render();}},
+        cats.map(([id,c])=>{ const s=stats[id]; return opt(id, `${c.name} — ${s.remaining ? plural(s.remaining,'left','left') : 'none left'}`, id===f.catId, !s.remaining); }))),
+    el('fieldset',{class:'field',style:'border:0;padding:0;margin:0'}, el('legend',{class:'legend',style:'margin-bottom:6px'},'Show the Doc ID as'),
+      el('div',{class:'seg'},
+        segOpt('fmt','regular','Regular number', f.format==='regular', false, ()=>{f.format='regular'; render();}),
+        segOpt('fmt','meps','MEPS number', f.format==='meps', !cat.hasMeps, ()=>{f.format='meps'; render();})),
+      !cat.hasMeps ? el('span',{class:'hint'},'This category’s spreadsheet has no MEPS numbers.') :
+        el('span',{class:'hint'},'Both formats are the same Doc ID. Once it’s used in one format it’s used in both.')),
+    el('div',{class:'field'}, el('label',{for:'f-mn'},'Project mnemonic'),
+      el('input',{id:'f-mn', type:'text', value:f.mnemonic, autocomplete:'off', spellcheck:'false', placeholder:'e.g. JWB-SPR',
+        oninput:e=>{ f.mnemonic=e.target.value; clearTimeout(f._t); f._t=setTimeout(()=>render(), 250); }}),
+      prior ? el('span',{class:'hint'}, `This project already has ${plural(prior,'Doc ID')}.`, ' ', el('a',{href:'#', onclick:e=>{e.preventDefault(); S.filters={...S.filters, q:f.mnemonic.trim()}; go('records');}}, 'View them')) : null),
+    el('div',{class:'field'}, el('span',{class:'legend'},'Documents'),
+      el('div',{class:'lines'}, f.lines.map((l,i)=>el('div',{class:'line'},
+        el('select',{id:'f-type-'+i, 'aria-label':'Document type', value:l.type, onchange:e=>{l.type=e.target.value;}}, types.map(t=>opt(t.name,t.name,t.name===l.type))),
+        el('input',{id:'f-qty-'+i, type:'number', min:1, max:MAX_PER_REQUEST, inputmode:'numeric', 'aria-label':'How many', value:l.qty,
+          oninput:e=>{ l.qty=e.target.value; const t=f.lines.reduce((x,y)=>x+(parseInt(y.qty,10)||0),0); const b=document.getElementById('f-go'); if (b && !S.busy) b.textContent=`Get ${t>0?plural(t,'Doc ID'):'Doc IDs'}`; }}),
+        f.lines.length>1 ? el('button',{type:'button', class:'btn icon ghost', 'aria-label':'Remove this line', onclick:()=>{f.lines.splice(i,1); render();}}, '✕') : el('span')))),
+      el('div',null, el('button',{type:'button', class:'btn ghost', onclick:()=>{f.lines.push({type:types.find(t=>!f.lines.some(l=>l.type===t.name))?.name || types[0]?.name, qty:1}); render();}}, '+ Add another document type'))),
+    S.formErr ? el('p',{class:'err-text', role:'alert'}, S.formErr) : null,
+    el('div',{class:'row'},
+      el('button',{id:'f-go', class:'btn primary big', type:'submit', disabled:S.busy || !S.canWrite || !st.remaining},
+        S.busy ? [el('span',{class:'spin'}), 'Getting Doc IDs…'] : `Get ${total>0?plural(total,'Doc ID'):'Doc IDs'}`),
+      S.busy && S.busyMsg ? el('span',{class:'hint'}, S.busyMsg) : null,
+      !S.canWrite ? el('span',{class:'hint'},'You have view-only access, so you can’t request Doc IDs.') : null));
+
+  return el('div',{class:'stack'},
+    el('div',{class:'req-grid'}, form, el('div',{class:'stack'}, poolPanel(f.catId, st, pools[f.catId]), pendingPanel())));
+}
+function segOpt(name, value, label, checked, disabled, on){
+  return el('label',null, el('input',{type:'radio', name, value, checked, disabled, onchange:on}), el('span',null,label));
+}
+function poolPanel(catId, s, pool){
+  const c=S.cats[catId]; const usedPct = s.total ? (s.issued/s.total*100) : 0;
+  const nextE = pool && pool.arr[s.next];
+  return el('section',{class:'card stack', 'aria-label':'Selected category'},
+    el('div',null, el('div',{class:'pool-name'}, c.name),
+      el('div',{class:'hint'}, `${plural(s.total,'Doc ID')} in this category`)),
+    el('div',{class:'pool-count num'}, s.remaining.toLocaleString(), el('small',null,'left')),
+    el('div',{class:'gauge '+s.level, role:'img', 'aria-label':`${Math.round(100-usedPct)}% left`}, el('i',{class:'used', style:`width:${usedPct}%`}), el('i',{class:'left', style:`width:${100-usedPct}%`})),
+    s.level==='low' ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null,'Running low. Ask for another range of Doc IDs for this category.')) : null,
+    s.level==='empty' ? el('div',{class:'banner empty'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null,'No Doc IDs left. Ask for a new range of Doc IDs for this category.')) : null,
+    el('dl',{class:'kv'},
+      el('dt',null,'Next Doc ID'), el('dd',{class:'num'}, nextE ? String(nextE[0]) : '—'),
+      el('dt',null,'Used'), el('dd',{class:'num'}, (s.Assigned||0).toLocaleString()),
+      el('dt',null,'Waiting for Done'), el('dd',{class:'num'}, (s.Reserved||0).toLocaleString()),
+      el('dt',null,'Cancelled'), el('dd',{class:'num'}, (s.Cancelled||0).toLocaleString())),
+    (c.notes||[]).length ? el('div',null, el('h3',null,'Notes from the spreadsheet'), el('ul',{class:'notes'}, c.notes.map(n=>el('li',null,n)))) : null);
+}
+function groupsOf(records){
+  const g=new Map(); for (const r of records){ const k=r.reqId||(r.catId+':'+r.idx); if (!g.has(k)) g.set(k,[]); g.get(k).push(r); }
+  return [...g.values()].map(list=>list.sort((a,b)=>a.idx-b.idx));
+}
+function pendingPanel(){
+  const mine = derive().records.filter(r=>r.status==='Reserved' && r.reservedBy===S.uid);
+  if (!mine.length) return null;
+  return el('section',{class:'card stack'},
+    el('div',null, el('h2',{style:'margin:0'},'Waiting for you to click Done'), el('p',{class:'hint',style:'margin:4px 0 0'},'These Doc IDs are held for you. Open them to copy them again and confirm.')),
+    groupsOf(mine).map(list=>el('div',{class:'row'},
+      el('div',{style:'flex:1;min-width:0'}, el('b',null,list[0].mnemonic), ' ', el('span',{class:'hint'}, `${plural(list.length,'Doc ID')} · ${catName(list[0].catId)}`)),
+      el('button',{class:'btn', onclick:()=>openAssignedModal({catId:list[0].catId, cat:S.cats[list[0].catId], items:list, reopened:true})},'Open'))));
+}
+async function submitRequest(){
+  const f=S.form; S.formErr='';
+  const mnemonic=f.mnemonic.trim();
+  const lines=f.lines.map(l=>({docType:l.type, qty:parseInt(l.qty,10)}));
+  if (!mnemonic){ S.formErr='Enter the project mnemonic.'; render(); document.getElementById('f-mn')?.focus(); return; }
+  if (lines.some(l=>!l.docType)){ S.formErr='Choose a document type for each line.'; render(); return; }
+  if (lines.some(l=>!Number.isInteger(l.qty) || l.qty<1)){ S.formErr='Each line needs a number of Doc IDs of 1 or more.'; render(); return; }
+  const count=lines.reduce((a,l)=>a+l.qty,0);
+  if (count>MAX_PER_REQUEST){ S.formErr=`You can get up to ${MAX_PER_REQUEST} Doc IDs in one request.`; render(); return; }
+  const s=derive().stats[f.catId];
+  if (count>s.remaining){ S.formErr=`Only ${plural(s.remaining,'Doc ID')} left in this category.`; render(); return; }
+  S.busy=true; S.busyMsg=''; render();
+  try {
+    const res = await allocate({catId:f.catId, lines, mnemonic, format:f.format});
+    S.busy=false; S.busyMsg=''; f.lines=[{type:lines[0].docType, qty:1}]; render();
+    openAssignedModal(res);
+  } catch(e){
+    S.busy=false; S.busyMsg='';
+    S.formErr = e instanceof AppError ? e.message : (e && e.code==='quota_exceeded' ? 'The Doc ID database is full. Ask an administrator for help.' : 'The Doc IDs couldn’t be assigned. Nothing was handed out. Try again.');
+    render();
+  }
+}
+
+/* ----- Assignment pop-up ----- */
+function idNode(e, format, cls='id'){
+  const meps = format==='meps' && e.meps;
+  if (meps && MEPS_FONT) return el('div',{class:cls+' meps-raw', title:mepsDigits(e.meps)}, e.meps);
+  return el('div',{class:cls+' num'}, meps ? mepsDigits(e.meps) : e.regular);
+}
+function openAssignedModal({catId, cat, items, reopened}){
+  const root=document.getElementById('modal-root');
+  const mn=items[0].mnemonic; const format=items[0].format;
+  const isMeps = format==='meps';
+  const raws = items.map(it=> isMeps && it.meps ? it.meps : it.regular);
+  const errP = el('p',{class:'err-text', role:'alert'});
+  const doneBtn = el('button',{class:'btn primary big', onclick:onDone}, 'Done');
+  const cancelBtn = el('button',{class:'btn danger', onclick:onCancel}, items.length>1?'Cancel these Doc IDs':'Cancel this Doc ID');
+  const s=derive().stats[catId]; const lowNow = s && s.level!=='ok';
+  const copyBtn = (raw, label) => { const b=el('button',{class:'btn', onclick:async()=>{
+      const ok = await copyIds(raw, isMeps);
+      if (ok){ b.classList.add('copied'); b.textContent='Copied'; setTimeout(()=>{ b.classList.remove('copied'); b.textContent=label; }, 1800); }
+      else manualCopy(raw);
+    }}, label); return b; };
+  const manual = el('div');
+  function manualCopy(raw){
+    const ta = el('textarea',{readonly:true, rows:Math.min(raw.length,6), style:isMeps?"font-family:'MEPS Bookman Universal',serif":''}); ta.value=raw.join('\n');
+    manual.replaceChildren(el('p',{class:'hint'},'Your browser blocked automatic copying. The Doc IDs are selected below — press Ctrl+C (⌘C on Mac) to copy them.'), ta);
+    ta.focus(); ta.select();
+  }
+  const dlg = el('div',{class:'dialog', role:'dialog', 'aria-modal':'true', 'aria-labelledby':'dlg-t'},
+    el('header',null,
+      el('h2',{id:'dlg-t'}, `Please copy the following Doc ID${items.length>1?'s':''} for project ${mn}.`),
+      el('p',{class:'hint',style:'margin:0'}, `${cat?.name||catName(catId)}, shown as ${isMeps?'MEPS':'regular'} number${items.length>1?'s':''}.`,
+        isMeps && !MEPS_FONT ? ' The MEPS font isn’t installed on this device, so the digits are shown here; the copy is in MEPS characters.' : '')),
+    el('div',{class:'body'},
+      items.map((it,i)=>el('div',{class:'ticket', style:`animation-delay:${Math.min(i,8)*40}ms`},
+        el('div',{class:'stub'}, el('b',null,it.docType), el('span',null, isMeps?'MEPS':'Regular')),
+        el('div',{class:'val'}, idNode(it, format), isMeps ? el('div',{class:'fmt num'}, `Regular: ${it.regular}`) : (it.meps ? el('div',{class:'fmt num'}, `MEPS: ${mepsDigits(it.meps)}`) : null)),
+        el('div',{class:'act'}, copyBtn([raws[i]], 'Copy')))),
+      items.length>1 ? el('div',{class:'row'}, copyBtn(raws, 'Copy all '+items.length)) : null,
+      manual,
+      lowNow ? el('div',{class:'banner '+s.level}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, s.level==='empty' ? 'That was the last of this category’s Doc IDs. Ask for a new range.' : `Only ${plural(s.remaining,'Doc ID')} left in this category. Ask for another range.`)) : null,
+      el('p',{class:'hint',style:'margin:0'}, 'After you paste them into your documents, click Done. They will be marked as used and can never be given out again.'),
+      errP),
+    el('footer',null, cancelBtn, el('span',{class:'spacer'}), doneBtn));
+  const ov = el('div',{class:'overlay'}, dlg);
+  root.replaceChildren(ov);
+  document.body.style.overflow='hidden';
+  setTimeout(()=>dlg.querySelector('.act button')?.focus(), 30);
+  const refs = items.map(it=>({catId, idx:it.idx}));
+  function close(){ root.replaceChildren(); document.body.style.overflow=''; }
+  async function onDone(){
+    doneBtn.disabled=cancelBtn.disabled=true; doneBtn.replaceChildren(el('span',{class:'spin'}),'Saving…'); errP.textContent='';
+    try { await setStatus(refs,'Assigned','Marked as used',`Confirmed by requester`); close(); toast(`${plural(items.length,'Doc ID')} marked as used for ${mn}.`); }
+    catch(e){ errP.textContent='Couldn’t save. Your Doc IDs are still held for you — click Done again.'; doneBtn.disabled=cancelBtn.disabled=false; doneBtn.textContent='Done'; }
+  }
+  async function onCancel(){
+    if (!confirm(`Cancel ${items.length>1?'these Doc IDs':'this Doc ID'}? ${items.length>1?'They':'It'} will be marked as cancelled and never given out again. Only do this if you won’t use ${items.length>1?'them':'it'}.`)) return;
+    doneBtn.disabled=cancelBtn.disabled=true; errP.textContent='';
+    try { await setStatus(refs,'Cancelled','Cancelled','Cancelled by requester before use'); close(); toast('Cancelled. These Doc IDs won’t be reused.'); }
+    catch(e){ errP.textContent='Couldn’t cancel. Try again.'; doneBtn.disabled=cancelBtn.disabled=false; }
+  }
+}
+
+/* ----- Records view ----- */
+function filteredRecords(){
+  const F=S.filters; const q=mepsDigits(F.q).trim().toLowerCase();
+  const from = F.from ? new Date(F.from+'T00:00:00').toISOString() : '';
+  const to = F.to ? new Date(F.to+'T23:59:59.999').toISOString() : '';
+  return derive().records.filter(r=>{
+    if (F.catId && r.catId!==F.catId) return false;
+    if (F.docType && r.docType!==F.docType) return false;
+    if (F.status && r.status!==F.status) return false;
+    if (from && r.reservedAt<from) return false;
+    if (to && r.reservedAt>to) return false;
+    if (q){ const hay=(r.regular+' '+mepsDigits(r.meps)+' '+r.mnemonic+' '+r.docType+' '+catName(r.catId)).toLowerCase(); if (!hay.includes(q)) return false; }
+    return true;
+  });
+}
+function lookupUnassigned(q){
+  q=mepsDigits(q).trim(); if (!q || !/^[A-Za-z0-9\-_.\/]{4,}$/.test(q)) return null;
+  const {pools,stats}=derive();
+  for (const [cid,p] of Object.entries(pools)){
+    const i = p.arr.findIndex(([reg])=>String(reg)===q);
+    if (i>=0) return {catId:cid, idx:i, free: i>=stats[cid].next};
+  }
+  return {none:true};
+}
+function recordsView(){
+  const F=S.filters; const list=filteredRecords();
+  const types=[...new Set([...docTypes(true).map(t=>t.name), ...derive().records.map(r=>r.docType)])];
+  const shown=list.slice(0,S.showLimit);
+  const setF=(k,v)=>{ F[k]=v; S.showLimit=200; render(); };
+  let qT=0;
+  const lookup = F.q && !list.length ? lookupUnassigned(F.q) : null;
+  return el('div',{class:'stack'},
+    el('div',null, el('h1',null,'Records'), el('p',{class:'lede'},'Every Doc ID that has been handed out, with who got it and when. Search by Doc ID in either format, or by project mnemonic.')),
+    el('div',{class:'card stack'},
+      el('div',{class:'filters'},
+        el('div',{class:'field q'}, el('label',{for:'r-q'},'Search'), el('input',{id:'r-q', type:'search', value:F.q, placeholder:'Doc ID or project mnemonic', oninput:e=>{ F.q=e.target.value; clearTimeout(qT); qT=setTimeout(()=>{S.showLimit=200; render();},160); }})),
+        el('div',{class:'field'}, el('label',{for:'r-c'},'Category'), el('select',{id:'r-c', value:F.catId, onchange:e=>setF('catId',e.target.value)}, opt('','All categories'), allCats().map(([id,c])=>opt(id,c.name)))),
+        el('div',{class:'field'}, el('label',{for:'r-t'},'Document type'), el('select',{id:'r-t', value:F.docType, onchange:e=>setF('docType',e.target.value)}, opt('','All types'), types.map(t=>opt(t,t)))),
+        el('div',{class:'field'}, el('label',{for:'r-s'},'Status'), el('select',{id:'r-s', value:F.status, onchange:e=>setF('status',e.target.value)}, opt('','All statuses'), STATUSES.map(s=>opt(s, `${s} (${STATUS_HELP[s].split(' —')[0].toLowerCase()})`))))),
+      el('div',{class:'filters2'},
+        el('div',{class:'field'}, el('label',{for:'r-f'},'From'), el('input',{id:'r-f', type:'date', value:F.from, onchange:e=>setF('from',e.target.value)})),
+        el('div',{class:'field'}, el('label',{for:'r-to'},'To'), el('input',{id:'r-to', type:'date', value:F.to, onchange:e=>setF('to',e.target.value)})),
+        el('div',{class:'row', style:'justify-content:flex-end'},
+          (F.q||F.catId||F.docType||F.status||F.from||F.to) ? el('button',{class:'btn ghost', onclick:()=>{S.filters={q:'',catId:'',docType:'',status:'',from:'',to:''}; render();}},'Clear filters') : null,
+          S.downloads ? el('button',{class:'btn', disabled:!list.length, onclick:()=>exportRecords(list,'csv')},'Export CSV') : null,
+          S.downloads ? el('button',{class:'btn', disabled:!list.length, onclick:()=>exportRecords(list,'xlsx')},'Export Excel') : null))),
+    el('p',{class:'hint',style:'margin:0'}, list.length ? `Showing ${shown.length.toLocaleString()} of ${plural(list.length,'record')}.` : ''),
+    lookup ? lookupNode(lookup) : null,
+    !list.length && !lookup ? el('div',{class:'card empty-state'}, el('h2',null, derive().records.length?'No records match':'No Doc IDs handed out yet'),
+      el('p',null, derive().records.length ? 'Try a different search or clear the filters.' : 'Records appear here as soon as someone requests Doc IDs.')) : null,
+    list.length ? el('div',{class:'scroll'}, el('table',null,
+      el('thead',null, el('tr',null, ['Doc ID','Project','Category','Document type','Status','Assigned','By'].map(h=>el('th',{scope:'col'},h)))),
+      el('tbody',null, shown.map(recordRows)))) : null,
+    list.length>shown.length ? el('div',null, el('button',{class:'btn', onclick:()=>{S.showLimit+=500; render();}}, `Show ${Math.min(500,list.length-shown.length)} more`)) : null);
+}
+function lookupNode(l){
+  if (l.none) return el('div',{class:'card'}, el('p',{style:'margin:0'}, `${S.filters.q.trim()} isn’t in any Doc ID category.`));
+  const {pools}=derive(); const e=pools[l.catId].arr[l.idx];
+  return el('div',{class:'card'}, el('p',{style:'margin:0'}, el('b',{class:'num'}, String(e[0])), ` is in ${catName(l.catId)} and `,
+    l.free ? 'hasn’t been handed out yet.' : 'was issued but has no record. Ask an administrator to check it.'));
+}
+function recordRows(r){
+  const key=r.catId+':'+r.idx; const open=S.expanded.has(key);
+  const toggle=()=>{ open?S.expanded.delete(key):S.expanded.add(key); render(); };
+  const rows=[el('tr',{class:'clickable', tabindex:0, 'aria-expanded':String(open), onclick:toggle, onkeydown:e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();} }},
+    el('td',{class:'id num'}, r.regular, r.meps ? el('span',{class:'sub'}, 'MEPS '+mepsDigits(r.meps)) : null),
+    el('td',null, r.mnemonic), el('td',null, catName(r.catId)), el('td',null, r.docType),
+    el('td',null, el('span',{class:'chip '+r.status}, r.status)),
+    el('td',{style:'white-space:nowrap'}, fmtDate(r.reservedAt)), el('td',null, nameOf(r.reservedBy)))];
+  if (open) rows.push(el('tr',{class:'detail'}, el('td',{colspan:7}, el('div',{class:'stack',style:'gap:10px'},
+    el('div',{class:'row small'}, el('span',null, `Shown to requester as ${r.format==='meps'?'MEPS':'regular'} number.`),
+      r.confirmedAt ? el('span',{class:'muted'}, `Done clicked ${fmtDate(r.confirmedAt)} by ${nameOf(r.confirmedBy)}.`) : null,
+      el('span',{class:'spacer'}),
+      S.isAdmin ? el('button',{class:'btn', onclick:e=>{e.stopPropagation(); openEditModal(r);}},'Correct or cancel') : null),
+    el('ul',{class:'hist'}, (r.history||[]).map(h=>el('li',null, el('span',{class:'muted num'}, fmtDate(h.at)), el('span',null, el('b',null,h.action), h.note?` — ${h.note}`:'', ` (${nameOf(h.by)})`))))))));
+  return rows;
+}
+async function exportRecords(list, kind){
+  const who = await namesFor(list.flatMap(r=>[r.reservedBy, r.confirmedBy, r.cancelledBy]));
+  const header=['Doc ID (Regular)','Doc ID (MEPS characters)','MEPS number (digits)','Shown as','Project mnemonic','Category','Document type','Status','Assigned at','Assigned by','Done at','Done by','Cancelled at','Cancelled by','Last change'];
+  const rows=list.map(r=>{ const last=(r.history||[]).slice(-1)[0]||{};
+    return [r.regular, r.meps||'', r.meps?mepsDigits(r.meps):'', r.format==='meps'?'MEPS':'Regular', r.mnemonic, catName(r.catId), r.docType, r.status,
+      fmtDate(r.reservedAt), who(r.reservedBy), fmtDate(r.confirmedAt), r.confirmedBy?who(r.confirmedBy):'', fmtDate(r.cancelledAt), r.cancelledBy?who(r.cancelledBy):'',
+      last.action ? `${last.action}${last.note?': '+last.note:''}` : '']; });
+  const stamp=new Date().toISOString().slice(0,10);
+  if (kind==='csv'){
+    const csv='\uFEFF'+[header,...rows].map(row=>row.map(v=>{ const s=String(v??''); return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }).join(',')).join('\r\n');
+    return save(`doc-id-records-${stamp}.csv`, csv);
+  }
+  const ws=XLSX.utils.aoa_to_sheet([header,...rows]); ws['!cols']=header.map((h,i)=>({wch:[14,16,14,9,16,26,18,11,20,18,20,18,20,18,40][i]}));
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Doc ID records');
+  const note=XLSX.utils.aoa_to_sheet([['About this export'],['The "Doc ID (MEPS characters)" column holds the original MEPS characters. Set that column to the MEPS Bookman Universal font to see them as they appear in your documents.'],[`Exported ${fmtDate(nowIso())}`]]);
+  XLSX.utils.book_append_sheet(wb, note, 'Notes');
+  return save(`doc-id-records-${stamp}.xlsx`, new Uint8Array(XLSX.write(wb,{bookType:'xlsx', type:'array'})));
+}
+async function save(filename, data){
+  const type = filename.endsWith('.csv') ? 'text/csv;charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const url = URL.createObjectURL(new Blob([data], {type}));
+  const a = el('a',{href:url, download:filename, style:'display:none'}); document.body.append(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 1500);
+}
+
+/* ----- Admin: correct or cancel ----- */
+function openEditModal(r){
+  const root=document.getElementById('modal-root');
+  const types=[...new Set([...docTypes(true).map(t=>t.name), r.docType])];
+  const mn=el('input',{id:'e-mn',type:'text',value:r.mnemonic}); const ty=el('select',{id:'e-ty',value:r.docType}, types.map(t=>opt(t,t,t===r.docType)));
+  const stS=el('select',{id:'e-st',value:r.status}, STATUSES.map(s=>opt(s,`${s} — ${STATUS_HELP[s]}`,s===r.status)));
+  const why=el('textarea',{id:'e-why', placeholder:'e.g. Wrong mnemonic typed; should be JWB-SPR'}); const err=el('p',{class:'err-text',role:'alert'});
+  const saveB=el('button',{class:'btn primary',onclick:doSave},'Save correction');
+  const dlg=el('div',{class:'dialog',role:'dialog','aria-modal':'true','aria-labelledby':'e-t'},
+    el('header',null, el('h2',{id:'e-t'}, `Correct Doc ID ${r.regular}`), el('p',{class:'hint',style:'margin:0'}, `${catName(r.catId)}. Every change is kept in the record’s history. A cancelled Doc ID is never given out again.`)),
+    el('div',{class:'body'},
+      el('div',{class:'field'}, el('label',{for:'e-mn'},'Project mnemonic'), mn),
+      el('div',{class:'field'}, el('label',{for:'e-ty'},'Document type'), ty),
+      el('div',{class:'field'}, el('label',{for:'e-st'},'Status'), stS),
+      el('div',{class:'field'}, el('label',{for:'e-why'},'Reason for the change'), why), err),
+    el('footer',null, el('button',{class:'btn',onclick:close},'Close without saving'), saveB));
+  root.replaceChildren(el('div',{class:'overlay', onclick:e=>{ if(e.target===e.currentTarget) close(); }}, dlg));
+  document.body.style.overflow='hidden'; setTimeout(()=>mn.focus(),30);
+  function close(){ root.replaceChildren(); document.body.style.overflow=''; }
+  async function doSave(){
+    const nm=mn.value.trim(), nt=ty.value, ns=stS.value, reason=why.value.trim();
+    if (!nm){ err.textContent='The project mnemonic can’t be empty.'; return; }
+    if (!reason){ err.textContent='Add a reason so the audit trail shows why this changed.'; why.focus(); return; }
+    const changes=[]; if (nm!==r.mnemonic) changes.push(`project ${r.mnemonic} → ${nm}`); if (nt!==r.docType) changes.push(`type ${r.docType} → ${nt}`); if (ns!==r.status) changes.push(`status ${r.status} → ${ns}`);
+    if (!changes.length){ err.textContent='Nothing has changed.'; return; }
+    saveB.disabled=true; const at=nowIso();
+    try {
+      await mutateRecords([{catId:r.catId, idx:r.idx}], e=>{
+        e.mnemonic=nm; e.docType=nt;
+        if (ns!==e.status){ e.status=ns; if (ns==='Assigned'){e.confirmedAt=at;e.confirmedBy=S.uid;e.confirmedByName=myName();} if (ns==='Cancelled'){e.cancelledAt=at;e.cancelledBy=S.uid;e.cancelledByName=myName();} }
+        e.history=[...(e.history||[]), {at, by:S.uid, byName:myName(), action:'Corrected by administrator', note:`${changes.join('; ')}. Reason: ${reason}`}];
+        return e; });
+      close(); toast('Correction saved.');
+    } catch(e){ err.textContent='The correction couldn’t be saved. Try again.'; saveB.disabled=false; }
+  }
+}
+
+/* ----- Admin view ----- */
+function adminView(){
+  const tabs=[['categories','Categories'],['range','Add a range'],['upload','Upload spreadsheets'],['pending','Waiting for Done'],['reports','Utilization'],['types','Document types'],['people','People']];
+  const body = {categories:adminCategories, range:adminRange, upload:adminUpload, pending:adminPending, reports:adminReports, types:adminTypes, people:adminPeople}[S.adminTab]();
+  return el('div',null, el('h1',null,'Administration'), el('p',{class:'lede'},'Create categories from a range of Doc IDs, add new ranges, and review how Doc IDs are being used.'),
+    el('div',{class:'subtabs', role:'tablist'}, tabs.map(([k,l])=>el('button',{class:'subtab', role:'tab', 'aria-current':S.adminTab===k?'page':null, onclick:()=>{S.adminTab=k; render();}}, l))),
+    body);
+}
+function adminCategories(){
+  const {stats,pools}=derive(); const cats=allCats();
+  if (!cats.length) return el('div',{class:'card empty-state'}, el('h2',null,'No categories yet'), el('p',null,'Add a range of Doc IDs to create one.'), el('button',{class:'btn primary',onclick:()=>{S.adminTab='range';render();}},'Add a range'));
+  return el('div',{class:'cat-list'}, cats.map(([id,c])=>{
+    const s=stats[id]; const open=S.openCats.has(id); const usedPct=s.total?s.issued/s.total*100:0; const p=pools[id];
+    const thrId='thr-'+id;
+    return el('section',{class:'card cat'},
+      el('div',{class:'cat-head'},
+        el('div',{style:'flex:1;min-width:220px'}, el('div',{class:'pool-name'}, c.name, ' ', c.archived?el('span',{class:'chip'},'Retired'):el('span',{class:'chip '+s.level}, s.level==='ok'?'Healthy':s.level==='low'?'Running low':'Empty')),
+          el('div',{class:'hint'}, (c.sourceFiles||[]).map(f=>f.name).join(', '))),
+        el('div',{class:'stats'},
+          stat(s.remaining,'left'), stat(s.Assigned||0,'used'), stat(s.Reserved||0,'waiting'), stat(s.Cancelled||0,'cancelled'), stat(s.total,'total'))),
+      el('div',{class:'gauge '+s.level}, el('i',{class:'used',style:`width:${usedPct}%`}), el('i',{class:'left',style:`width:${100-usedPct}%`})),
+      el('div',{class:'row'},
+        el('button',{class:'btn', 'aria-expanded':String(open), onclick:()=>{open?S.openCats.delete(id):S.openCats.add(id); render();}}, open?'Hide details':'Details and settings'),
+        el('button',{class:'btn ghost', onclick:()=>{S.filters={q:'',catId:id,docType:'',status:'',from:'',to:''}; go('records');}},'View assigned Doc IDs'),
+        el('button',{class:'btn ghost', onclick:()=>{S.range={...S.range, target:id, msg:'', done:''}; S.adminTab='range'; render();}},'Add a new range')),
+      open ? el('div',{class:'stack',style:'gap:14px;border-top:1px solid var(--line);padding-top:14px'},
+        el('dl',{class:'kv'},
+          el('dt',null,'Next Doc ID'), el('dd',{class:'num'}, p.arr[s.next] ? String(p.arr[s.next][0]) : 'None left'),
+          el('dt',null,'Last Doc ID'), el('dd',{class:'num'}, p.arr.length ? String(p.arr[p.arr.length-1][0]) : '—'),
+          el('dt',null,'Formats'), el('dd',null, c.hasMeps ? 'Regular and MEPS' : 'Regular only'),
+          el('dt',null,'Ranges loaded'), el('dd',null, (c.sourceFiles||[]).map(f=>el('div',null, `${f.name}: ${f.first}–${f.last} (${f.count.toLocaleString()}), ${fmtDate(f.importedAt)}`)))),
+        (c.notes||[]).length ? el('div',null, el('h3',null,'Notes from the spreadsheet'), el('ul',{class:'notes'}, c.notes.map(n=>el('li',null,n)))) : null,
+        el('div',{class:'row',style:'align-items:flex-end'},
+          el('div',{class:'field',style:'max-width:260px'}, el('label',{for:thrId},'Warn when this many are left'),
+            el('input',{id:thrId, type:'number', min:0, value:s.threshold})),
+          el('button',{class:'btn', onclick:async()=>{ const v=parseInt(document.getElementById(thrId).value,10); if(!(v>=0)){toast('Enter 0 or more.');return;}
+            try{ await S.db.doc('categories/'+id).update({lowThreshold:v}); toast('Reminder level saved.'); }catch(e){ toast('Couldn’t save the reminder level.'); } }},'Save'),
+          el('span',{class:'spacer'}),
+          el('button',{class:'btn', onclick:async()=>{ const n=prompt('Category name', c.name); if(!n||!n.trim()||n.trim()===c.name) return;
+            try{ await S.db.doc('categories/'+id).update({name:n.trim()}); }catch(e){ toast('Couldn’t rename the category.'); } }},'Rename'),
+          el('button',{class:'btn '+(c.archived?'':'danger'), onclick:async()=>{
+            if (!c.archived && !confirm(`Retire ${c.name}? Secretaries won’t be able to request Doc IDs from it. Its records stay, and you can bring it back later.`)) return;
+            try{ await S.db.doc('categories/'+id).update({archived:!c.archived}); }catch(e){ toast('Couldn’t change the category.'); } }}, c.archived?'Bring back':'Retire')),
+        el('div',null, el('h3',null, `Remaining Doc IDs (${s.remaining.toLocaleString()})`),
+          s.remaining ? el('div',{class:'idlist num'}, p.arr.slice(s.next, S.showAllIds.has(id)?undefined:s.next+200).map(([reg])=>el('span',null,String(reg)))) : el('p',{class:'hint'},'None left.'),
+          s.remaining>200 && !S.showAllIds.has(id) ? el('button',{class:'btn ghost',style:'margin-top:6px',onclick:()=>{S.showAllIds.add(id);render();}}, `Show all ${s.remaining.toLocaleString()}`) : null)) : null);
+  }));
+}
+function stat(n,l){ return el('div',{class:'stat'}, el('b',{class:'num'}, Number(n).toLocaleString()), el('span',null,l)); }
+
+function adminRange(){
+  const R=S.range; const b=buildRange(R);
+  if (R.target!=='new' && !S.cats[R.target]) R.target='new';
+  let t=0; const upd=(k)=>e=>{ R[k]= e.target.type==='checkbox' ? e.target.checked : e.target.value; R.msg=''; R.done=''; clearTimeout(t); t=setTimeout(render, e.target.type==='checkbox'?0:250); };
+  const p=b.parsed; const fresh=p ? p.rows.filter(r=>!r.overlap) : [];
+  const overl=p ? Object.entries(p.overlapByCat||{}) : [];
+  const tgtCat=R.target!=='new' ? S.cats[R.target] : null;
+  return el('div',{class:'stack'},
+    el('p',{class:'hint',style:'margin:0;max-width:70ch'},'Enter the first and last Doc ID. Every number in between becomes an available Doc ID, in regular and MEPS format, in order.'),
+    el('div',{class:'req-grid'},
+      el('div',{class:'card stack'},
+        el('div',{class:'field'}, el('label',{for:'rg-t'},'Add these Doc IDs to'),
+          el('select',{id:'rg-t', value:R.target, onchange:e=>{R.target=e.target.value; R.msg=''; R.done=''; render();}},
+            opt('new','A new category'), allCats().map(([id,c])=>opt(id,`Existing category: ${c.name}`)))),
+        R.target==='new' ? el('div',{class:'field'}, el('label',{for:'rg-n'},'Category name'),
+          el('input',{id:'rg-n', type:'text', value:R.name, placeholder:'e.g. 2028 JWB Document IDs', oninput:upd('name')})) : null,
+        el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:10px'},
+          el('div',{class:'field'}, el('label',{for:'rg-a'},'First Doc ID'), el('input',{id:'rg-a', type:'text', inputmode:'numeric', autocomplete:'off', value:R.first, placeholder:'902026254', oninput:upd('first')})),
+          el('div',{class:'field'}, el('label',{for:'rg-b'},'Last Doc ID'), el('input',{id:'rg-b', type:'text', inputmode:'numeric', autocomplete:'off', value:R.last, placeholder:'902026899', oninput:upd('last')}))),
+        el('label',{class:'row',style:'gap:8px;align-items:flex-start;cursor:pointer'}, el('input',{id:'rg-top', type:'checkbox', checked:R.skipTop, onchange:upd('skipTop'), style:'margin-top:4px'}),
+          el('span',null, 'Leave out numbers ending in 900–999', el('span',{class:'hint',style:'display:block'},'For ranges that cross a block kept for vernacular only.'))),
+        el('div',{class:'field'}, el('label',{for:'rg-x'},'Also leave out (optional)'),
+          el('input',{id:'rg-x', type:'text', value:R.exclude, placeholder:'e.g. 902026300-902026309, 902026450', oninput:upd('exclude')}),
+          el('span',{class:'hint'},'Single Doc IDs or ranges, separated by commas.')),
+        el('label',{class:'row',style:'gap:8px;cursor:pointer'}, el('input',{id:'rg-m', type:'checkbox', checked:R.meps, onchange:upd('meps')}), 'Provide MEPS numbers too'),
+        R.target==='new' ? el('div',{class:'field'}, el('label',{for:'rg-no'},'Notes (optional)'),
+          el('textarea',{id:'rg-no', value:R.notes, placeholder:'e.g. 900-999 for vernacular only', oninput:upd('notes')}), el('span',{class:'hint'},'One note per line. Shown with the category when people request Doc IDs.')) : null),
+      el('div',{class:'card stack', 'aria-live':'polite'},
+        el('h2',{style:'margin:0'},'Preview'),
+        b.empty ? el('p',{class:'hint',style:'margin:0'},'Enter the first and last Doc ID to see what will be added.') :
+        b.error ? el('p',{class:'err-text'}, b.error) :
+        [el('div',{class:'pool-count num'}, fresh.length.toLocaleString(), el('small',null, fresh.length===1?'Doc ID':'Doc IDs')),
+         el('dl',{class:'kv'},
+           el('dt',null,'Category'), el('dd',null, tgtCat ? tgtCat.name : (R.name.trim() || '—')),
+           el('dt',null,'First'), el('dd',{class:'num'}, fresh[0]?.reg || '—'),
+           el('dt',null,'Last'), el('dd',{class:'num'}, fresh[fresh.length-1]?.reg || '—'),
+           el('dt',null,'Formats'), el('dd',null, R.meps?'Regular and MEPS':'Regular only'),
+           b.skipped ? [el('dt',null,'Left out'), el('dd',{class:'num'}, b.skipped.toLocaleString())] : null,
+           tgtCat ? [el('dt',null,'After adding'), el('dd',{class:'num'}, `${(derive().stats[R.target].remaining+fresh.length).toLocaleString()} left in this category`)] : null),
+         R.meps && fresh[0] ? el('p',{class:'hint',style:'margin:0'}, `MEPS numbers are created in the MEPS Bookman Universal characters, the same as in your spreadsheets.`) : null,
+         overl.length ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${overl.map(([cid,n])=>`${n.toLocaleString()} already in ${catName(cid)}`).join(', ')}. Those Doc IDs will be skipped so nothing can be handed out twice.`)) : null],
+        R.msg ? el('p',{class:'err-text', role:'alert'}, R.msg) : null,
+        R.done ? el('div',{class:'banner info'}, el('span',{class:'ico'}, el('i',null,'✓')), el('p',null,R.done)) : null,
+        el('div',null, el('button',{class:'btn primary big', disabled: R.busy || !p || !fresh.length || (R.target==='new' && !R.name.trim()), onclick:addRange},
+          R.busy ? [el('span',{class:'spin'}),'Adding…'] : (R.target==='new' ? 'Create category' : 'Add to category'))),
+        p && R.target==='new' && !R.name.trim() ? el('p',{class:'hint',style:'margin:0'},'Give the category a name to continue.') : null)));
+}
+async function addRange(){
+  const R=S.range; const b=buildRange(R); if (!b.parsed) return;
+  R.busy=true; R.msg=''; render();
+  const n=b.parsed.rows.filter(r=>!r.overlap).length;
+  try {
+    const cid = await runImport({parsed:b.parsed, name:R.name, target:R.target, fileName:`Range ${b.first}–${b.last}`});
+    const name = catName(cid) === 'Unknown category' ? R.name.trim() : catName(cid);
+    S.range={target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, msg:'', busy:false,
+      done:`${plural(n,'Doc ID')} added to ${name}. Secretaries can request them now.`};
+    toast('Range added.');
+  } catch(e){
+    R.busy=false; R.msg = e instanceof AppError ? e.message : (e&&e.code==='quota_exceeded' ? 'The database is full. Retire old categories first.' : 'The range wasn’t added. Nothing was changed. Try again.');
+  }
+  render();
+}
+function adminUpload(){
+  const input=el('input',{type:'file', accept:'.xlsx,.xls,.xlsm,.csv', multiple:true, class:'sr', id:'up-file', onchange:e=>{ readFiles([...e.target.files]); e.target.value=''; }});
+  const drop=el('label',{class:'drop', for:'up-file',
+    ondragover:e=>{e.preventDefault(); drop.classList.add('over');}, ondragleave:()=>drop.classList.remove('over'),
+    ondrop:e=>{e.preventDefault(); drop.classList.remove('over'); readFiles([...e.dataTransfer.files]);}},
+    el('b',null,'Choose spreadsheets or drop them here'),
+    el('p',{class:'hint'},'Cell A1 names the category. Put “Regular Numbers” and “MEPS Numbers” headers above the Doc ID columns. You can add several files at once.'));
+  return el('div',{class:'stack'}, el('div',null, input, drop),
+    S.imports.length ? el('div',{class:'stack'}, S.imports.map(importCard)) : null);
+}
+function importCard(imp){
+  if (imp.status==='error') return el('div',{class:'card'}, el('b',null,imp.fileName), el('p',{class:'err-text'}, imp.msg),
+    el('button',{class:'btn ghost',onclick:()=>{S.imports=S.imports.filter(x=>x!==imp); render();}},'Remove'));
+  const p=imp.parsed; const fresh=p.rows.filter(r=>!r.dup&&!r.overlap);
+  const dups=p.rows.filter(r=>r.dup).length; const mism=p.rows.filter(r=>r.flags.includes('mismatch')).length; const nomeps=p.rows.filter(r=>r.flags.includes('nomeps')).length;
+  const overl=Object.entries(p.overlapByCat||{});
+  const done = imp.status==='done';
+  return el('section',{class:'card stack'},
+    el('div',{class:'row'}, el('b',null, imp.fileName), el('span',{class:'spacer'}),
+      done ? el('span',{class:'chip ok'},'Imported') : el('button',{class:'btn ghost',onclick:()=>{S.imports=S.imports.filter(x=>x!==imp); render();}},'Remove')),
+    el('dl',{class:'kv'},
+      el('dt',null,'Doc IDs found'), el('dd',{class:'num'}, p.rows.length.toLocaleString()),
+      el('dt',null,'Range'), el('dd',{class:'num'}, `${p.rows[0].reg} – ${p.rows[p.rows.length-1].reg}`),
+      el('dt',null,'Formats'), el('dd',null, p.hasMeps ? `${p.headerRegular} and ${p.headerMeps}` : `${p.headerRegular} only`),
+      p.notes.length ? [el('dt',null,'Notes'), el('dd',null, p.notes.join(' · '))] : null),
+    overl.length ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${overl.map(([cid,n])=>`${n.toLocaleString()} already in ${catName(cid)}`).join(', ')}. Those Doc IDs will be skipped so nothing can be handed out twice.`)) : null,
+    dups ? el('p',{class:'hint'}, `${plural(dups,'Doc ID')} appear twice in this file; only the first copy is kept.`) : null,
+    mism ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${plural(mism,'row')}: the MEPS number doesn’t match the regular number. Check the file before importing.`)) : null,
+    nomeps ? el('p',{class:'hint'}, `${plural(nomeps,'row')} have no MEPS number.`) : null,
+    p.extraSheets ? el('p',{class:'hint'}, `Only the first sheet (${p.sheetName}) is read.`) : null,
+    done ? el('p',{style:'margin:0'}, imp.msg) :
+    fresh.length ? el('div',{class:'stack',style:'gap:12px'},
+      el('div',{class:'field'}, el('label',{for:'imp-t-'+imp.key},'Add these Doc IDs to'),
+        el('select',{id:'imp-t-'+imp.key, value:imp.target, onchange:e=>{imp.target=e.target.value; render();}},
+          opt('new','A new category', imp.target==='new'), allCats().map(([id,c])=>opt(id, `Existing category: ${c.name}`, imp.target===id)))),
+      imp.target==='new' ? el('div',{class:'field'}, el('label',{for:'imp-n-'+imp.key},'Category name'),
+        el('input',{id:'imp-n-'+imp.key, type:'text', value:imp.name, oninput:e=>{imp.name=e.target.value;}}),
+        imp.sameNameAs ? el('span',{class:'hint'}, 'A category with this name already exists. If this is a new range for it, choose it above instead.') : null) : null,
+      imp.msg ? el('p',{class:'err-text'}, imp.msg) : null,
+      el('div',null, el('button',{class:'btn primary', disabled:imp.status==='importing', onclick:async()=>{
+          imp.status='importing'; imp.msg=''; render();
+          try { const cid=await runImport(imp); imp.status='done'; imp.msg=`${plural(fresh.length,'Doc ID')} added to ${imp.target==='new'?imp.name.trim():catName(cid)}.`; toast('Import finished.'); }
+          catch(e){ imp.status='ready'; imp.msg = e instanceof AppError ? e.message : (e&&e.code==='quota_exceeded'?'The database is full. Retire and remove old categories first.':'The import didn’t finish. Nothing was changed. Try again.'); }
+          render(); }}, imp.status==='importing' ? [el('span',{class:'spin'}),'Importing…'] : `Import ${plural(fresh.length,'Doc ID')}`)))
+    : el('p',{class:'hint'},'Every Doc ID in this file is already in the system, so there is nothing to import.'));
+}
+function adminPending(){
+  const all=derive().records.filter(r=>r.status==='Reserved');
+  if (!all.length) return el('div',{class:'card empty-state'}, el('h2',null,'Nothing is waiting'), el('p',null,'Doc IDs show up here when someone gets them but hasn’t clicked Done yet.'));
+  return el('div',{class:'stack'},
+    el('p',{class:'hint',style:'margin:0'},'These Doc IDs were handed out but the person hasn’t clicked Done. They stay held and are never given to anyone else. Confirm them if they were used, or cancel them if not.'),
+    el('div',{class:'scroll'}, el('table',null,
+      el('thead',null, el('tr',null, ['Project','Doc IDs','Category','Requested','By',''].map(h=>el('th',null,h)))),
+      el('tbody',null, groupsOf(all).map(list=>{ const f=list[0]; const refs=list.map(r=>({catId:r.catId, idx:r.idx}));
+        return el('tr',null, el('td',null, el('b',null,f.mnemonic)), el('td',{class:'num'}, list.map(r=>`${r.regular} (${r.docType})`).join(', ')),
+          el('td',null,catName(f.catId)), el('td',{style:'white-space:nowrap'}, fmtDate(f.reservedAt)), el('td',null,nameOf(f.reservedBy)),
+          el('td',null, el('div',{class:'row',style:'flex-wrap:nowrap'},
+            el('button',{class:'btn', onclick:async()=>{ try{ await setStatus(refs,'Assigned','Marked as used','Confirmed by administrator'); toast('Marked as used.'); }catch(e){ toast('Couldn’t save. Try again.'); } }},'Mark as used'),
+            el('button',{class:'btn danger', onclick:async()=>{ if(!confirm('Cancel these Doc IDs? They will never be given out again.')) return; try{ await setStatus(refs,'Cancelled','Cancelled','Cancelled by administrator (Done was never clicked)'); toast('Cancelled.'); }catch(e){ toast('Couldn’t cancel. Try again.'); } }},'Cancel')))); })))));
+}
+function adminReports(){
+  const {stats,records}=derive(); const cats=allCats();
+  const tot=cats.reduce((a,[id])=>{ const s=stats[id]; a.total+=s.total; a.used+=s.Assigned||0; a.res+=s.Reserved||0; a.can+=s.Cancelled||0; a.left+=s.remaining; return a; },{total:0,used:0,res:0,can:0,left:0});
+  const types={}; for (const r of records){ const t=types[r.docType] ||= {Assigned:0,Reserved:0,Cancelled:0}; t[r.status]++; }
+  const months={}; for (const r of records){ if (r.status==='Cancelled') continue; const m=String(r.reservedAt).slice(0,7); months[m]=(months[m]||0)+1; }
+  const pct=(a,b)=>b?Math.round(a/b*100)+'%':'—';
+  return el('div',{class:'stack'},
+    el('div',{class:'card'}, el('div',{class:'stats'}, stat(tot.total,'Doc IDs loaded'), stat(tot.used,'used'), stat(tot.res,'waiting for Done'), stat(tot.can,'cancelled'), stat(tot.left,'left'),
+      el('div',{class:'stat'}, el('b',null,pct(tot.used+tot.res+tot.can,tot.total)), el('span',null,'issued')))),
+    el('div',{class:'row'}, el('h2',{style:'margin:0'},'By category'), el('span',{class:'spacer'}), S.downloads ? el('button',{class:'btn', onclick:exportReport},'Export report to Excel') : null),
+    el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, ['Category','Total','Used','Waiting','Cancelled','Left','Issued','Status'].map(h=>el('th',null,h)))),
+      el('tbody',null, cats.map(([id,c])=>{ const s=stats[id]; return el('tr',null, el('td',null,c.name), ...[s.total,s.Assigned||0,s.Reserved||0,s.Cancelled||0,s.remaining].map(n=>el('td',{class:'num'},n.toLocaleString())),
+        el('td',{class:'num'},pct(s.issued,s.total)), el('td',null, el('span',{class:'chip '+(c.archived?'':s.level)}, c.archived?'Retired':s.level==='ok'?'Healthy':s.level==='low'?'Running low':'Empty'))); })))),
+    el('h2',{style:'margin:8px 0 0'},'By document type'),
+    Object.keys(types).length ? el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, ['Document type','Used','Waiting','Cancelled'].map(h=>el('th',null,h)))),
+      el('tbody',null, Object.entries(types).sort().map(([t,v])=>el('tr',null, el('td',null,t), el('td',{class:'num'},v.Assigned), el('td',{class:'num'},v.Reserved), el('td',{class:'num'},v.Cancelled)))))) : el('p',{class:'hint'},'No Doc IDs have been handed out yet.'),
+    Object.keys(months).length ? el('h2',{style:'margin:8px 0 0'},'Handed out per month') : null,
+    Object.keys(months).length ? el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, el('th',null,'Month'), el('th',null,'Doc IDs (excluding cancelled)'))),
+      el('tbody',null, Object.entries(months).sort().reverse().map(([m,n])=>el('tr',null, el('td',null, new Date(m+'-01T12:00:00').toLocaleDateString(undefined,{year:'numeric',month:'long'})), el('td',{class:'num'},n)))))) : null);
+}
+async function exportReport(){
+  const {stats,records}=derive(); const wb=XLSX.utils.book_new();
+  const cat=[['Category','Total','Used','Waiting for Done','Cancelled','Left','Issued %','Reminder level','Status']];
+  for (const [id,c] of allCats()){ const s=stats[id]; cat.push([c.name,s.total,s.Assigned||0,s.Reserved||0,s.Cancelled||0,s.remaining, s.total?Math.round(s.issued/s.total*1000)/10:0, s.threshold, c.archived?'Retired':s.level==='ok'?'Healthy':s.level==='low'?'Running low':'Empty']); }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cat), 'By category');
+  const tt=[['Category','Document type','Used','Waiting for Done','Cancelled']];
+  for (const [id,c] of allCats()) for (const [t,v] of Object.entries(stats[id].byType).sort()) tt.push([c.name,t,v.Assigned||0,v.Reserved||0,v.Cancelled||0]);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(tt), 'By document type');
+  const pm={}; for (const r of records){ const k=String(r.reservedAt).slice(0,7)+'|'+r.catId; pm[k]=(pm[k]||0)+(r.status==='Cancelled'?0:1); }
+  const mm=[['Month','Category','Doc IDs handed out (excluding cancelled)']]; for (const [k,n] of Object.entries(pm).sort()){ const [m,cid]=k.split('|'); mm.push([m,catName(cid),n]); }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(mm), 'By month');
+  await save(`doc-id-utilization-${new Date().toISOString().slice(0,10)}.xlsx`, new Uint8Array(XLSX.write(wb,{bookType:'xlsx',type:'array'})));
+}
+function adminTypes(){
+  const list=docTypes(true).map(t=>({...t}));
+  const persist=async(next)=>{ try{ await S.db.doc('config/app').set({...(S.config.app||{}), docTypes:next}); toast('Document types saved.'); }catch(e){ toast('Couldn’t save document types.'); } };
+  const addIn=el('input',{id:'t-new',type:'text',placeholder:'e.g. Narration Script'});
+  const add=()=>{ const n=addIn.value.trim(); if(!n) return; if(list.some(t=>t.name.toLowerCase()===n.toLowerCase())){ toast('That document type already exists.'); return; } persist([...list,{name:n,active:true}]); };
+  return el('div',{class:'stack'},
+    el('p',{class:'hint',style:'margin:0'},'These appear in the Document type list when someone requests Doc IDs. Hiding a type keeps it on existing records.'),
+    el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, el('th',null,'Document type'), el('th',null,'Shown to secretaries'), el('th',null,''))),
+      el('tbody',null, list.map((t,i)=>el('tr',null, el('td',null,t.name),
+        el('td',null, t.active!==false ? el('span',{class:'chip ok'},'Shown') : el('span',{class:'chip'},'Hidden')),
+        el('td',null, el('div',{class:'row',style:'justify-content:flex-end'},
+          el('button',{class:'btn ghost', onclick:()=>{ const n=prompt('Rename document type (existing records keep the old name)', t.name); if(!n||!n.trim()) return; const next=list.map(x=>({...x})); next[i].name=n.trim(); persist(next); }},'Rename'),
+          el('button',{class:'btn ghost', onclick:()=>{ const next=list.map(x=>({...x})); next[i].active = t.active===false; if(!next.some(x=>x.active!==false)){ toast('Keep at least one type shown.'); return; } persist(next); }}, t.active!==false?'Hide':'Show')))))))),
+    el('div',{class:'row',style:'align-items:flex-end'}, el('div',{class:'field',style:'flex:1;min-width:200px'}, el('label',{for:'t-new'},'Add a document type'), addIn), el('button',{class:'btn primary',onclick:add},'Add type')));
+}
+
+function adminPeople(){
+  const list=Object.entries(S.members).sort((a,b)=>a[0].localeCompare(b[0]));
+  const em=el('input',{id:'p-mail', type:'email', placeholder:'name@example.org'}), nm=el('input',{id:'p-name', type:'text', placeholder:'Full name'});
+  const ro=el('select',{id:'p-role'}, opt('secretary','Secretary'), opt('admin','Administrator'));
+  const add=async()=>{ const e=em.value.trim().toLowerCase(); if (!/^[^@\s\/]+@[^@\s\/]+\.[^@\s\/]+$/.test(e)){ toast('Enter a valid email address.'); return; }
+    if (S.members[e]){ toast('That person is already on the list.'); return; }
+    try{ await S.db.doc('members/'+e).set({role:ro.value, name:nm.value.trim(), addedAt:nowIso(), addedBy:S.uid}); toast(`${e} added.`); }catch(x){ toast('Couldn’t add that person.'); } };
+  return el('div',{class:'stack'},
+    el('p',{class:'hint',style:'margin:0;max-width:70ch'},'Only people on this list can sign in. Secretaries request Doc IDs and search records. Administrators can also manage categories, ranges, corrections, reports and this list.'),
+    el('div',{class:'card'}, el('div',{class:'row',style:'align-items:flex-end'},
+      el('div',{class:'field',style:'flex:2;min-width:200px'}, el('label',{for:'p-mail'},'Email address'), em),
+      el('div',{class:'field',style:'flex:2;min-width:160px'}, el('label',{for:'p-name'},'Name'), nm),
+      el('div',{class:'field',style:'flex:1;min-width:140px'}, el('label',{for:'p-role'},'Role'), ro),
+      el('button',{class:'btn primary', onclick:add},'Add person'))),
+    el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, ['Email','Name','Role',''].map(h=>el('th',null,h)))),
+      el('tbody',null, list.map(([e,m])=>el('tr',null, el('td',null,e), el('td',null,m.name||''),
+        el('td',null, e===S.uid ? (m.role==='admin'?'Administrator (you)':'Secretary (you)') :
+          el('select',{'aria-label':'Role for '+e, value:m.role, onchange:async ev=>{ try{ await S.db.doc('members/'+e).update({role:ev.target.value}); toast('Role changed.'); }catch(x){ toast('Couldn’t change the role.'); } }},
+            opt('secretary','Secretary', m.role!=='admin'), opt('admin','Administrator', m.role==='admin'))),
+        el('td',null, e===S.uid ? null : el('div',{class:'row',style:'justify-content:flex-end'},
+          el('button',{class:'btn ghost', onclick:async()=>{ const n=prompt('Name for '+e, m.name||''); if (n==null) return; try{ await S.db.doc('members/'+e).update({name:n.trim()}); }catch(x){ toast('Couldn’t rename.'); } }},'Rename'),
+          el('button',{class:'btn ghost danger', onclick:async()=>{ if(!confirm(`Remove ${e}? They won’t be able to sign in. Their records stay.`)) return; try{ await S.db.doc('members/'+e).delete(); toast('Removed.'); }catch(x){ toast('Couldn’t remove that person.'); } }},'Remove')))))))));
+}
+
+/* ---------- Boot ---------- */
+function subscribe(){
+  const map={categories:'cats', pool:'pools', alloc:'alloc', rec:'rec', config:'config'};
+  for (const [coll,key] of Object.entries(map)){
+    S.unsubs.push(S.db.collection(coll).onSnapshot(snap=>{
+      const m={}; for (const d of snap.docs) if (d.exists) m[d.id]=d.data();
+      S[key]=m; S.loaded[key]=true; invalidate();
+      if (!S.ready && Object.values(S.loaded).every(Boolean)) S.ready=true;
+      schedule();
+    }, err=>{
+      S.loaded[key]=true; if (Object.values(S.loaded).every(Boolean)) S.ready=true;
+      if (err && err.code==='permission-denied'){ S.phase='noaccess'; S.noAccessMsg='Your access was removed or changed. Ask an administrator, then reload.'; }
+      else toast('Live updates paused. Reload the page if numbers look out of date.', 6000);
+      schedule();
+    }));
+  }
+  if (S.isAdmin) S.unsubs.push(S.db.collection('members').onSnapshot(snap=>{ const m={}; for (const d of snap.docs) m[d.id]=d.data(); S.members=m; invalidate(); schedule(); }, ()=>{}));
+}
+function resetData(){
+  S.unsubs.forEach(u=>{ try{u();}catch(e){} }); S.unsubs=[];
+  Object.assign(S, {cats:{}, pools:{}, alloc:{}, rec:{}, config:{}, members:{}, ready:false, isAdmin:false, d:null});
+  for (const k of Object.keys(S.loaded)) S.loaded[k]=false;
+}
+async function enterApp(){
+  const m = await S.db.doc('members/'+S.me.email).get();
+  if (!m.exists){ const setup = await S.db.doc('config/setup').get(); S.phase = setup.exists ? 'noaccess' : 'setup'; render(); return; }
+  const md = m.data(); S.isAdmin = md.role==='admin'; if (md.name) S.me.name = md.name;
+  S.canWrite = true; S.phase='app'; S.view='request'; subscribe(); render();
+}
+async function boot(){
+  const cfg = window.DOCID_FIREBASE_CONFIG;
+  if (!window.firebase || !cfg || !cfg.apiKey || /YOUR_|PASTE/i.test(cfg.apiKey)){ S.phase='config'; render(); return; }
+  render();
+  firebase.initializeApp(cfg);
+  S.auth = firebase.auth(); S.db = firebase.firestore();
+  if (S.auth.isSignInWithEmailLink(location.href)){
+    let em=null; try{ em=localStorage.getItem('docid-email'); }catch(e){}
+    if (!em) em = prompt('To finish signing in, confirm your email address.');
+    if (em){ try { await S.auth.signInWithEmailLink(em.trim().toLowerCase(), location.href); try{ localStorage.removeItem('docid-email'); }catch(e){} }
+      catch(e){ S.authErr='That sign-in link has expired or was already used. Request a new one.'; } }
+    history.replaceState(null, '', location.pathname);
+  }
+  S.auth.onAuthStateChanged(async u=>{
+    resetData();
+    if (!u){ S.phase='signin'; S.uid=null; S.me={email:'',name:''}; render(); return; }
+    const email=(u.email||'').toLowerCase(); S.uid=email; S.me={email, name:u.displayName||''}; S.authMsg='';
+    if (!email || !u.emailVerified){ S.phase='noaccess'; S.noAccessMsg='This account’s email address isn’t verified. Sign in with Google or with an emailed link instead.'; render(); return; }
+    S.phase='loading'; render();
+    try { await enterApp(); }
+    catch(e){ S.phase='error'; S.errMsg = e && e.code==='permission-denied' ? 'The database refused access. Check that the security rules from firestore.rules are published.' : 'Check your connection and reload the page.'; render(); }
+  });
+}
+boot();
+</script>
+</body>
+</html>

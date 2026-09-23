@@ -1,0 +1,75 @@
+rules_version = '2';
+
+// Security rules for Doc ID Desk.
+// Publish these in the Firebase console: Firestore Database > Rules.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email_verified == true;
+    }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function memberPath() { return /databases/$(database)/documents/members/$(myEmail()); }
+    function isMember() { return signedIn() && exists(memberPath()); }
+    function isAdmin() { return isMember() && get(memberPath()).data.role == 'admin'; }
+
+    // One-time setup: the first person to sign in may make themselves administrator,
+    // and only while no one has done so yet.
+    match /config/setup {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && !exists(/databases/$(database)/documents/config/setup)
+        && request.resource.data.ownerEmail == myEmail();
+    }
+
+    // Other settings (document types). Everyone reads; administrators change.
+    match /config/{doc} {
+      allow read: if isMember();
+      allow write: if isAdmin() && doc != 'setup';
+    }
+
+    // People allowed to use the app. Document id = lower-case email address.
+    match /members/{email} {
+      allow get: if signedIn() && (email == myEmail() || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+        || (signedIn()
+            && email == myEmail()
+            && request.resource.data.role == 'admin'
+            && !exists(/databases/$(database)/documents/config/setup)
+            && getAfter(/databases/$(database)/documents/config/setup).data.ownerEmail == myEmail());
+      allow update, delete: if isAdmin() && email != myEmail();
+    }
+
+    // Categories and their pools of Doc IDs: administrators only.
+    match /categories/{id} {
+      allow read: if isMember();
+      allow write: if isAdmin();
+    }
+    match /pool/{id} {
+      allow read: if isMember();
+      allow create: if isAdmin();
+      allow update, delete: if false;   // a loaded pool is never edited
+    }
+
+    // Allocation pointer per category: it can only ever move forward,
+    // so no Doc ID can be handed out a second time.
+    match /alloc/{catId} {
+      allow read: if isMember();
+      allow create: if isMember() && request.resource.data.next is int && request.resource.data.next >= 0;
+      allow update: if isMember() && request.resource.data.next is int
+        && request.resource.data.next >= resource.data.next;
+      allow delete: if false;
+    }
+
+    // Assignment ledger (the audit trail). Never deleted.
+    match /rec/{id} {
+      allow read: if isMember();
+      allow create: if isMember();
+      allow update: if isMember() && request.resource.data.catId == resource.data.catId;
+      allow delete: if false;
+    }
+  }
+}
