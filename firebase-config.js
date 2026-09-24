@@ -2,10 +2,10 @@
 // These values are not secret: Firebase security comes from firestore.rules,
 // so it is safe for this file to be public on GitHub.
 window.DOCID_FIREBASE_CONFIG = {
-  apiKey: "PASTE_API_KEY",
-  authDomain: "your-project.firebaseapp.com",
-  projectId: "your-project",
-  storageBucket: "your-project.appspot.com",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:0000000000000000"
+  apiKey: "AIzaSyAN8F3xXF68mUIjqfUAILtGIxRdOCUlocA",
+  authDomain: "docid-desk.firebaseapp.com",
+  projectId: "docid-desk",
+  storageBucket: "docid-desk.firebasestorage.app",
+  messagingSenderId: "642058378347",
+  appId: "1:642058378347:web:723d531b6947ed7bbde52e"
 };
