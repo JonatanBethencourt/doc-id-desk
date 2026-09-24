@@ -5,14 +5,23 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Any login that has an email address.
+    function authed() {
+      return request.auth != null && request.auth.token.email != null;
+    }
+    // A login whose email address is proven (Google, or an emailed sign-in link).
     function signedIn() {
-      return request.auth != null
-        && request.auth.token.email != null
-        && request.auth.token.email_verified == true;
+      return authed() && request.auth.token.email_verified == true;
     }
     function myEmail() { return request.auth.token.email.lower(); }
     function memberPath() { return /databases/$(database)/documents/members/$(myEmail()); }
-    function isMember() { return signedIn() && exists(memberPath()); }
+    // On the People list, and either the email is proven or this is the exact
+    // password login an administrator created for them (its id is stored as uid).
+    function isMember() {
+      return authed() && exists(memberPath())
+        && (request.auth.token.email_verified == true
+            || get(memberPath()).data.get('uid', '') == request.auth.uid);
+    }
     function isAdmin() { return isMember() && get(memberPath()).data.role == 'admin'; }
 
     // One-time setup: the first person to sign in may make themselves administrator,
@@ -32,7 +41,7 @@ service cloud.firestore {
 
     // People allowed to use the app. Document id = lower-case email address.
     match /members/{email} {
-      allow get: if signedIn() && (email == myEmail() || isAdmin());
+      allow get: if authed() && (email == myEmail() || isAdmin());
       allow list: if isAdmin();
       allow create: if isAdmin()
         || (signedIn()
@@ -41,6 +50,14 @@ service cloud.firestore {
             && !exists(/databases/$(database)/documents/config/setup)
             && getAfter(/databases/$(database)/documents/config/setup).data.ownerEmail == myEmail());
       allow update, delete: if isAdmin() && email != myEmail();
+    }
+
+    // Username → login lookup, so people sign in with a username instead of an email.
+    // Anyone may look up one username (needed before signing in); only administrators
+    // can list or change them. Knowing a username is useless without its password.
+    match /logins/{username} {
+      allow get: if true;
+      allow list, create, update, delete: if isAdmin();
     }
 
     // Categories and their pools of Doc IDs: administrators only.

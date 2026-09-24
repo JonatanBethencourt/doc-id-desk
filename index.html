@@ -83,7 +83,7 @@ h3{font-size:15px;margin:0 0 8px;font-weight:650}
 .field{display:grid;gap:6px}
 .field>label,.legend{font-weight:600;font-size:14px}
 .hint{font-size:13px;color:var(--muted)}
-input[type=text],input[type=email],input[type=number],input[type=date],input[type=search],select,textarea{
+input[type=text],input[type=email],input[type=password],input[type=number],input[type=date],input[type=search],select,textarea{
   width:100%;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:9px 11px;min-height:40px}
 textarea{min-height:72px;resize:vertical}
 input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
@@ -195,6 +195,8 @@ tr.detail td{background:var(--sunk)}
 .spin{width:16px;height:16px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:rot .7s linear infinite}
 @keyframes rot{to{transform:rotate(360deg)}}
 .signin{max-width:440px;margin:40px auto}
+.signin details summary{cursor:pointer;color:var(--accent);font-weight:600}
+.signin details[open] summary{margin-bottom:12px}
 .signin .or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px}
 .signin .or::before,.signin .or::after{content:"";flex:1;height:1px;background:var(--line)}
 .google{width:100%}
@@ -267,7 +269,7 @@ function toast(msg, ms=3200){ const t=document.getElementById('toast'); t.textCo
 /* ---------- State ---------- */
 const S = {
   db:null, auth:null, downloads:true, uid:null, me:{email:'',name:''}, isAdmin:false, canWrite:true, fatal:null, ready:false,
-  phase:'loading', authErr:'', authMsg:'', members:{}, unsubs:[],
+  phase:'loading', authErr:'', authMsg:'', si:{user:'', pw:'', link:''}, people:{name:'', username:'', userEdited:false, role:'secretary', method:'password', email:'', pw:'', busy:false, msg:'', err:''}, members:{}, unsubs:[],
   cats:{}, pools:{}, alloc:{}, rec:{}, config:{},
   loaded:{cats:false,pools:false,alloc:false,rec:false,config:false},
   view:'request', adminTab:'categories',
@@ -603,9 +605,10 @@ function renderTabs(){
 function renderWho(){
   const w=document.getElementById('who');
   if (!S.auth || !S.auth.currentUser){ w.replaceChildren(); return; }
-  w.replaceChildren(el('span',null, S.me.name || S.me.email),
+  w.replaceChildren(...[el('span',null, S.me.name || S.me.email),
     S.phase==='app' ? el('span',{class:'role'}, S.isAdmin?'Administrator':'Secretary') : null,
-    el('button',{class:'btn ghost', style:'min-height:32px;padding:4px 10px', onclick:()=>S.auth.signOut()}, 'Sign out'));
+    S.phase==='app' && hasPasswordLogin() ? el('button',{class:'btn ghost', style:'min-height:32px;padding:4px 10px', onclick:openPasswordModal}, 'Change password') : null,
+    el('button',{class:'btn ghost', style:'min-height:32px;padding:4px 10px', onclick:()=>S.auth.signOut()}, 'Sign out')].filter(Boolean));
 }
 function renderBanners(){
   const b=document.getElementById('banners'); const out=[];
@@ -630,7 +633,7 @@ function viewNode(){
     S.authErr ? el('p',{class:'err-text'}, S.authErr) : null,
     el('button',{class:'btn primary big', onclick:claimSetup}, 'Make me the administrator')]);
   if (S.phase==='noaccess') return screen('You don’t have access yet', [
-    el('p',null, S.noAccessMsg || `You’re signed in as ${S.me.email}, but this address hasn’t been added. Ask a Doc ID Desk administrator to add it under Admin, then People, and reload this page.`),
+    el('p',null, S.noAccessMsg || `You’re signed in as ${S.me.email}, but you haven’t been added to Doc ID Desk. Ask an administrator to add you, then sign in again.`),
     el('button',{class:'btn', onclick:()=>S.auth.signOut()}, 'Use a different account')]);
   if (S.phase==='error') return screen('Doc ID Desk can’t reach its database', [el('p',null, S.errMsg || 'Check your connection and reload the page.')]);
   if (S.phase!=='app' || !S.ready) return el('div',{class:'empty-state'}, el('div',{class:'row',style:'justify-content:center'}, el('span',{class:'spin'}), 'Loading Doc IDs…'));
@@ -639,25 +642,78 @@ function viewNode(){
   return requestView();
 }
 function screen(title, body){ return el('div',{class:'card signin stack'}, el('h1',null,title), body); }
+const USERNAME_RE = /^[a-z0-9](?:[a-z0-9._-]{0,28}[a-z0-9])?$/;
 function signInNode(){
-  const mail = el('input',{id:'si-mail', type:'email', autocomplete:'email', placeholder:'name@example.org'});
-  const sendLink = async e=>{ e.preventDefault(); const em=mail.value.trim().toLowerCase();
-    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){ S.authErr='Enter a valid email address.'; render(); return; }
+  const SI=S.si; const validEmail = em => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em);
+  const say = (err, msg) => { S.authErr=err||''; S.authMsg=msg||''; render(); };
+  const doPw = async e=>{ e.preventDefault();
+    const id=SI.user.trim().toLowerCase();
+    if (!id || !SI.pw) return say('Enter your username and password.');
+    const wrong = 'The username or password is incorrect.';
+    try {
+      S.authErr=''; S.authMsg='';
+      let email = id;
+      if (!id.includes('@')){
+        if (!USERNAME_RE.test(id) || id.includes('..')){ SI.pw=''; return say(wrong); }
+        const d = await S.db.doc('logins/'+id).get();
+        if (!d.exists){ SI.pw=''; return say(wrong); }
+        email = d.data().email;
+      }
+      await S.auth.signInWithEmailAndPassword(email, SI.pw); SI.pw='';
+    } catch(x){ SI.pw=''; say(x && x.code==='auth/too-many-requests' ? 'Too many attempts. Wait a few minutes and try again.' : wrong); } };
+  const sendLink = async ()=>{ const em=SI.link.trim().toLowerCase();
+    if (!validEmail(em)) return say('Enter a valid email address for the sign-in link.');
     try { await S.auth.sendSignInLinkToEmail(em, {url:location.origin+location.pathname, handleCodeInApp:true});
       try{ localStorage.setItem('docid-email', em); }catch(x){}
-      S.authErr=''; S.authMsg=`We sent a sign-in link to ${em}. Open it on this device to finish signing in.`; }
-    catch(x){ S.authErr='The sign-in link couldn’t be sent. Check that Email link sign-in is turned on in Firebase.'; }
-    render(); };
+      say('', `We sent a sign-in link to ${em}. Open it on this device to finish signing in.`); }
+    catch(x){ say('The sign-in link couldn’t be sent. Check that Email link sign-in is turned on in Firebase.'); } };
   return el('div',{class:'card signin stack'},
-    el('div',null, el('h1',null,'Sign in to Doc ID Desk'), el('p',{class:'lede',style:'margin:0'},'Use the email address your administrator added.')),
-    el('button',{class:'btn big google', onclick:async()=>{ try{ S.authErr=''; await S.auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()); }catch(x){ if (x && x.code!=='auth/popup-closed-by-user'){ S.authErr='Google sign-in didn’t work. Try the email link instead.'; render(); } } }}, 'Sign in with Google'),
-    el('div',{class:'or'},'or get a sign-in link by email'),
-    el('form',{class:'stack', style:'gap:10px', onsubmit:sendLink},
-      el('div',{class:'field'}, el('label',{for:'si-mail'},'Email address'), mail),
-      el('button',{class:'btn primary', type:'submit'}, 'Email me a sign-in link')),
+    el('div',null, el('h1',null,'Sign in to Doc ID Desk'), el('p',{class:'lede',style:'margin:0'},'Use the username and password your administrator gave you.')),
+    el('form',{class:'stack', style:'gap:12px', onsubmit:doPw},
+      el('div',{class:'field'}, el('label',{for:'si-user'},'Username'),
+        el('input',{id:'si-user', type:'text', autocomplete:'username', autocapitalize:'none', spellcheck:'false', value:SI.user, placeholder:'e.g. maria.lopez', oninput:e=>{SI.user=e.target.value;}})),
+      el('div',{class:'field'}, el('label',{for:'si-pw'},'Password'),
+        el('input',{id:'si-pw', type:'password', autocomplete:'current-password', value:SI.pw, oninput:e=>{SI.pw=e.target.value;}})),
+      el('button',{class:'btn primary big', type:'submit'}, 'Sign in'),
+      el('p',{class:'hint',style:'margin:0;text-align:center'},'Forgot your password? Ask an administrator to reset it.')),
     S.authMsg ? el('div',{class:'banner info'}, el('span',{class:'ico'}, el('i',null,'✓')), el('p',null,S.authMsg)) : null,
-    S.authErr ? el('p',{class:'err-text', role:'alert'}, S.authErr) : null);
+    S.authErr ? el('p',{class:'err-text', role:'alert'}, S.authErr) : null,
+    el('details',{open:SI.link?true:null},
+      el('summary',null,'Other ways to sign in'),
+      el('div',{class:'stack',style:'gap:10px'},
+        el('button',{class:'btn google', onclick:async()=>{ try{ S.authErr=''; await S.auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()); }catch(x){ if (x && x.code!=='auth/popup-closed-by-user') say('Google sign-in didn’t work. Try another way.'); } }}, 'Sign in with Google'),
+        el('div',{class:'or'},'or'),
+        el('div',{class:'field'}, el('label',{for:'si-link'},'Email address'),
+          el('input',{id:'si-link', type:'email', autocomplete:'email', value:SI.link, placeholder:'name@example.org', oninput:e=>{SI.link=e.target.value;}})),
+        el('button',{class:'btn', onclick:sendLink}, 'Email me a sign-in link'))));
 }
+const hasPasswordLogin = () => ((S.auth && S.auth.currentUser && S.auth.currentUser.providerData) || []).some(p=>p && p.providerId==='password');
+function openPasswordModal(){
+  const root=document.getElementById('modal-root');
+  const cur=el('input',{id:'pw-cur', type:'password', autocomplete:'current-password'}), nw=el('input',{id:'pw-new', type:'password', autocomplete:'new-password'}), nw2=el('input',{id:'pw-new2', type:'password', autocomplete:'new-password'});
+  const err=el('p',{class:'err-text', role:'alert'}); const saveB=el('button',{class:'btn primary', onclick:doSave}, 'Change password');
+  const dlg=el('div',{class:'dialog', role:'dialog', 'aria-modal':'true', 'aria-labelledby':'pw-t'},
+    el('header',null, el('h2',{id:'pw-t'},'Change your password')),
+    el('div',{class:'body'},
+      el('div',{class:'field'}, el('label',{for:'pw-cur'},'Current password'), cur),
+      el('div',{class:'field'}, el('label',{for:'pw-new'},'New password'), nw, el('span',{class:'hint'},'At least 8 characters.')),
+      el('div',{class:'field'}, el('label',{for:'pw-new2'},'Type the new password again'), nw2), err),
+    el('footer',null, el('button',{class:'btn', onclick:close}, 'Cancel'), saveB));
+  root.replaceChildren(el('div',{class:'overlay', onclick:e=>{ if(e.target===e.currentTarget) close(); }}, dlg));
+  document.body.style.overflow='hidden'; setTimeout(()=>cur.focus(),30);
+  function close(){ root.replaceChildren(); document.body.style.overflow=''; }
+  async function doSave(){
+    err.textContent='';
+    if (nw.value.length<8){ err.textContent='The new password needs at least 8 characters.'; return; }
+    if (nw.value!==nw2.value){ err.textContent='The two new passwords don’t match.'; return; }
+    saveB.disabled=true;
+    try { const u=S.auth.currentUser;
+      await u.reauthenticateWithCredential(firebase.auth.EmailAuthProvider.credential(u.email, cur.value));
+      await u.updatePassword(nw.value); close(); toast('Password changed.'); }
+    catch(x){ saveB.disabled=false; err.textContent = x && (x.code==='auth/wrong-password'||x.code==='auth/invalid-credential'||x.code==='auth/invalid-login-credentials') ? 'The current password is incorrect.' : x && x.code==='auth/weak-password' ? 'Choose a stronger password.' : x && x.code==='auth/too-many-requests' ? 'Too many attempts. Try again in a few minutes.' : 'The password couldn’t be changed. Try again.'; }
+  }
+}
+
 async function claimSetup(){
   try {
     const batch=S.db.batch(); const at=nowIso();
@@ -1193,28 +1249,122 @@ function adminTypes(){
     el('div',{class:'row',style:'align-items:flex-end'}, el('div',{class:'field',style:'flex:1;min-width:200px'}, el('label',{for:'t-new'},'Add a document type'), addIn), el('button',{class:'btn primary',onclick:add},'Add type')));
 }
 
+function suggestPassword(){
+  const chars='abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'; const a=new Uint32Array(10); crypto.getRandomValues(a);
+  return [...a].map(n=>chars[n%chars.length]).join('');
+}
+function usernameFrom(name){
+  return name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g,'.').replace(/^\.+|\.+$/g,'').replace(/\.{2,}/g,'.').slice(0,30).replace(/[._-]+$/,'');
+}
+function validUsername(u){ return USERNAME_RE.test(u) && !u.includes('..'); }
+/* Username logins use a hidden internal email address that nobody sees or types. */
+function internalEmail(username){
+  const host = String((window.DOCID_FIREBASE_CONFIG||{}).authDomain || 'docid.app').toLowerCase();
+  return `${username}.${Math.random().toString(36).slice(2,8)}@users.${host}`;
+}
+/* Create a password login for someone else without signing the administrator out:
+   a second, separate Firebase connection is used just for this. */
+async function createLogin(email, pw, name){
+  const app2 = firebase.apps.find(a=>a.name==='people') || firebase.initializeApp(window.DOCID_FIREBASE_CONFIG, 'people');
+  const a2 = app2.auth(); try { await a2.setPersistence(firebase.auth.Auth.Persistence.NONE); } catch(e){}
+  try {
+    const c = await a2.createUserWithEmailAndPassword(email, pw);
+    if (name){ try { await c.user.updateProfile({displayName:name}); } catch(e){} }
+    const uid = c.user.uid; await a2.signOut(); return uid;
+  } catch(x){
+    const code = x && x.code;
+    if (code==='auth/weak-password' || code==='auth/password-does-not-meet-requirements') throw new AppError('That password is too weak. Use at least 8 characters, or click “Suggest one”.');
+    if (code==='auth/operation-not-allowed') throw new AppError('Password sign-in is turned off. In Firebase, go to Authentication → Sign-in method and enable Email/Password.');
+    if (code==='auth/email-already-in-use') throw new AppError('That login already exists. Try again.');
+    throw new AppError('The login couldn’t be created. Try again.');
+  }
+}
 function adminPeople(){
-  const list=Object.entries(S.members).sort((a,b)=>a[0].localeCompare(b[0]));
-  const em=el('input',{id:'p-mail', type:'email', placeholder:'name@example.org'}), nm=el('input',{id:'p-name', type:'text', placeholder:'Full name'});
-  const ro=el('select',{id:'p-role'}, opt('secretary','Secretary'), opt('admin','Administrator'));
-  const add=async()=>{ const e=em.value.trim().toLowerCase(); if (!/^[^@\s\/]+@[^@\s\/]+\.[^@\s\/]+$/.test(e)){ toast('Enter a valid email address.'); return; }
-    if (S.members[e]){ toast('That person is already on the list.'); return; }
-    try{ await S.db.doc('members/'+e).set({role:ro.value, name:nm.value.trim(), addedAt:nowIso(), addedBy:S.uid}); toast(`${e} added.`); }catch(x){ toast('Couldn’t add that person.'); } };
+  const P=S.people; const list=Object.entries(S.members).sort((a,b)=>String(a[1].name||a[0]).localeCompare(String(b[1].name||b[0])));
+  const add=async()=>{
+    const name=P.name.trim(); P.err=''; P.msg='';
+    if (!name){ P.err='Enter the person’s name.'; render(); return; }
+    P.busy=true; render();
+    try {
+      if (P.method==='password'){
+        const u=P.username.trim().toLowerCase(), pw=P.pw;
+        if (!validUsername(u)) throw new AppError('Usernames use lowercase letters, numbers, dots, dashes or underscores (2 to 30 characters), and start and end with a letter or number.');
+        if (pw.length<8) throw new AppError('The password needs at least 8 characters. Click “Suggest one” if you like.');
+        if ((await S.db.doc('logins/'+u).get()).exists) throw new AppError(`The username ${u} is already taken. Choose another.`);
+        const email = internalEmail(u);
+        const uid = await createLogin(email, pw, name);
+        const b=S.db.batch(); const at=nowIso();
+        b.set(S.db.doc('members/'+email), {role:P.role, name, username:u, uid, addedAt:at, addedBy:S.uid});
+        b.set(S.db.doc('logins/'+u), {email});
+        await b.commit();
+        P.msg = `${name} can now sign in with username ${u} and password ${pw}. Give them these privately.`;
+      } else {
+        const e=P.email.trim().toLowerCase();
+        if (!/^[^@\s\/]+@[^@\s\/]+\.[^@\s\/]+$/.test(e)) throw new AppError('Enter a valid email address.');
+        if (S.members[e]) throw new AppError('That person is already on the list.');
+        await S.db.doc('members/'+e).set({role:P.role, name, addedAt:nowIso(), addedBy:S.uid});
+        P.msg = `${name} can now sign in with Google or an emailed link, using ${e}.`;
+      }
+      Object.assign(P, {name:'', username:'', userEdited:false, email:'', pw:'', role:'secretary'});
+    } catch(x){ P.err = x instanceof AppError ? x.message : 'That person couldn’t be added. Try again.'; }
+    P.busy=false; render();
+  };
+  // A new password means a new login; the old one stops working straight away.
+  const resetPassword=async(oldEmail, m)=>{
+    const pw = prompt(`New password for ${m.name||m.username} (at least 8 characters).`, suggestPassword());
+    if (pw==null) return; if (pw.length<8){ toast('The password needs at least 8 characters.'); return; }
+    try {
+      const email = internalEmail(m.username);
+      const uid = await createLogin(email, pw, m.name||'');
+      const b=S.db.batch();
+      b.set(S.db.doc('members/'+email), {...m, uid, passwordResetAt:nowIso(), passwordResetBy:S.uid});
+      b.delete(S.db.doc('members/'+oldEmail));
+      b.set(S.db.doc('logins/'+m.username), {email});
+      await b.commit();
+      P.err=''; P.msg=`New password for ${m.name||m.username}: ${pw}. Username: ${m.username}. Give these to them privately.`; render();
+    } catch(x){ P.msg=''; P.err = x instanceof AppError ? x.message : 'The password couldn’t be reset. Try again.'; render(); }
+  };
+  const remove=async(e,m)=>{
+    if(!confirm(`Remove ${m.name||e}? They won’t be able to sign in. Their records stay.`)) return;
+    try{ const b=S.db.batch(); b.delete(S.db.doc('members/'+e)); if (m.username) b.delete(S.db.doc('logins/'+m.username)); await b.commit(); toast('Removed.'); }
+    catch(x){ toast('Couldn’t remove that person.'); }
+  };
+  const isPw = P.method==='password';
   return el('div',{class:'stack'},
-    el('p',{class:'hint',style:'margin:0;max-width:70ch'},'Only people on this list can sign in. Secretaries request Doc IDs and search records. Administrators can also manage categories, ranges, corrections, reports and this list.'),
-    el('div',{class:'card'}, el('div',{class:'row',style:'align-items:flex-end'},
-      el('div',{class:'field',style:'flex:2;min-width:200px'}, el('label',{for:'p-mail'},'Email address'), em),
-      el('div',{class:'field',style:'flex:2;min-width:160px'}, el('label',{for:'p-name'},'Name'), nm),
-      el('div',{class:'field',style:'flex:1;min-width:140px'}, el('label',{for:'p-role'},'Role'), ro),
-      el('button',{class:'btn primary', onclick:add},'Add person'))),
-    el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, ['Email','Name','Role',''].map(h=>el('th',null,h)))),
-      el('tbody',null, list.map(([e,m])=>el('tr',null, el('td',null,e), el('td',null,m.name||''),
+    el('p',{class:'hint',style:'margin:0;max-width:72ch'},'Only people on this list can sign in. Secretaries request Doc IDs and search records. Administrators can also manage categories, ranges, corrections, reports and this list.'),
+    el('div',{class:'card stack'},
+      el('h2',{style:'margin:0'},'Add a person'),
+      el('div',{class:'row',style:'align-items:flex-end'},
+        el('div',{class:'field',style:'flex:2;min-width:200px'}, el('label',{for:'p-name'},'Name'),
+          el('input',{id:'p-name', type:'text', value:P.name, autocomplete:'off', placeholder:'e.g. Maria Lopez', oninput:e=>{ P.name=e.target.value;
+            if (!P.userEdited){ P.username=usernameFrom(P.name); const u=document.getElementById('p-user'); if (u) u.value=P.username; } }})),
+        el('div',{class:'field',style:'flex:1;min-width:150px'}, el('label',{for:'p-role'},'Role'),
+          el('select',{id:'p-role', value:P.role, onchange:e=>{P.role=e.target.value;}}, opt('secretary','Secretary'), opt('admin','Administrator'))),
+        el('div',{class:'field',style:'flex:1;min-width:190px'}, el('label',{for:'p-method'},'Signs in with'),
+          el('select',{id:'p-method', value:P.method, onchange:e=>{P.method=e.target.value; P.err=''; render();}}, opt('password','Username and password'), opt('email','Google or email link')))),
+      isPw ? el('div',{class:'row',style:'align-items:flex-end'},
+        el('div',{class:'field',style:'flex:1;min-width:180px'}, el('label',{for:'p-user'},'Username'),
+          el('input',{id:'p-user', type:'text', value:P.username, autocomplete:'off', autocapitalize:'none', spellcheck:'false', oninput:e=>{P.username=e.target.value; P.userEdited=true;}})),
+        el('div',{class:'field',style:'flex:1;min-width:180px'}, el('label',{for:'p-pw'},'Password'),
+          el('input',{id:'p-pw', type:'text', value:P.pw, autocomplete:'off', spellcheck:'false', oninput:e=>{P.pw=e.target.value;}})),
+        el('button',{class:'btn', type:'button', onclick:()=>{P.pw=suggestPassword(); render();}}, 'Suggest one'))
+      : el('div',{class:'field',style:'max-width:420px'}, el('label',{for:'p-mail'},'Email address'),
+          el('input',{id:'p-mail', type:'email', value:P.email, autocomplete:'off', placeholder:'name@example.org', oninput:e=>{P.email=e.target.value;}})),
+      el('div',{class:'row'}, isPw ? el('span',{class:'hint'},'Passwords need at least 8 characters.') : null, el('span',{class:'spacer'}),
+        el('button',{class:'btn primary', disabled:P.busy, onclick:add}, P.busy ? [el('span',{class:'spin'}),'Adding…'] : 'Add person')),
+      P.err ? el('p',{class:'err-text', role:'alert'}, P.err) : null,
+      P.msg ? el('div',{class:'banner info'}, el('span',{class:'ico'}, el('i',null,'✓')), el('p',null,P.msg)) : null),
+    el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, ['Name','Username or email','Role','Signs in with',''].map(h=>el('th',null,h)))),
+      el('tbody',null, list.map(([e,m])=>el('tr',null, el('td',null,m.name||''), el('td',null, m.username || e),
         el('td',null, e===S.uid ? (m.role==='admin'?'Administrator (you)':'Secretary (you)') :
-          el('select',{'aria-label':'Role for '+e, value:m.role, onchange:async ev=>{ try{ await S.db.doc('members/'+e).update({role:ev.target.value}); toast('Role changed.'); }catch(x){ toast('Couldn’t change the role.'); } }},
+          el('select',{'aria-label':'Role for '+(m.name||e), value:m.role, onchange:async ev=>{ try{ await S.db.doc('members/'+e).update({role:ev.target.value}); toast('Role changed.'); }catch(x){ toast('Couldn’t change the role.'); } }},
             opt('secretary','Secretary', m.role!=='admin'), opt('admin','Administrator', m.role==='admin'))),
-        el('td',null, e===S.uid ? null : el('div',{class:'row',style:'justify-content:flex-end'},
-          el('button',{class:'btn ghost', onclick:async()=>{ const n=prompt('Name for '+e, m.name||''); if (n==null) return; try{ await S.db.doc('members/'+e).update({name:n.trim()}); }catch(x){ toast('Couldn’t rename.'); } }},'Rename'),
-          el('button',{class:'btn ghost danger', onclick:async()=>{ if(!confirm(`Remove ${e}? They won’t be able to sign in. Their records stay.`)) return; try{ await S.db.doc('members/'+e).delete(); toast('Removed.'); }catch(x){ toast('Couldn’t remove that person.'); } }},'Remove')))))))));
+        el('td',null, m.username ? 'Username and password' : m.uid ? 'Email and password' : 'Google or email link'),
+        el('td',null, e===S.uid ? null : el('div',{class:'row',style:'justify-content:flex-end;flex-wrap:nowrap'},
+          m.username ? el('button',{class:'btn ghost', onclick:()=>resetPassword(e,m)},'Reset password') : null,
+          el('button',{class:'btn ghost', onclick:async()=>{ const n=prompt('Name for '+(m.name||e), m.name||''); if (n==null||!n.trim()) return; try{ await S.db.doc('members/'+e).update({name:n.trim()}); }catch(x){ toast('Couldn’t rename.'); } }},'Rename'),
+          el('button',{class:'btn ghost danger', onclick:()=>remove(e,m)},'Remove')))))))));
 }
 
 /* ---------- Boot ---------- */
@@ -1241,9 +1391,17 @@ function resetData(){
   for (const k of Object.keys(S.loaded)) S.loaded[k]=false;
 }
 async function enterApp(){
+  const u = S.auth.currentUser;
   const m = await S.db.doc('members/'+S.me.email).get();
-  if (!m.exists){ const setup = await S.db.doc('config/setup').get(); S.phase = setup.exists ? 'noaccess' : 'setup'; render(); return; }
-  const md = m.data(); S.isAdmin = md.role==='admin'; if (md.name) S.me.name = md.name;
+  if (!m.exists){
+    if (!u.emailVerified){ S.phase='noaccess'; render(); return; }
+    const setup = await S.db.doc('config/setup').get(); S.phase = setup.exists ? 'noaccess' : 'setup'; render(); return;
+  }
+  const md = m.data();
+  if (!u.emailVerified && md.uid !== u.uid){
+    S.phase='noaccess'; S.noAccessMsg='This login no longer works, for example because your password was reset. Sign in again with your newest password, or ask an administrator for help.'; render(); return;
+  }
+  S.isAdmin = md.role==='admin'; if (md.name) S.me.name = md.name;
   S.canWrite = true; S.phase='app'; S.view='request'; subscribe(); render();
 }
 async function boot(){
@@ -1263,7 +1421,7 @@ async function boot(){
     resetData();
     if (!u){ S.phase='signin'; S.uid=null; S.me={email:'',name:''}; render(); return; }
     const email=(u.email||'').toLowerCase(); S.uid=email; S.me={email, name:u.displayName||''}; S.authMsg='';
-    if (!email || !u.emailVerified){ S.phase='noaccess'; S.noAccessMsg='This account’s email address isn’t verified. Sign in with Google or with an emailed link instead.'; render(); return; }
+    if (!email){ S.phase='noaccess'; S.noAccessMsg='This login has no email address. Sign in with your email and password, Google, or an emailed link.'; render(); return; }
     S.phase='loading'; render();
     try { await enterApp(); }
     catch(e){ S.phase='error'; S.errMsg = e && e.code==='permission-denied' ? 'The database refused access. Check that the security rules from firestore.rules are published.' : 'Check your connection and reload the page.'; render(); }
