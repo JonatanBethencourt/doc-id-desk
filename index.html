@@ -149,6 +149,11 @@ tr.detail td{background:var(--sunk)}
 .filters{display:grid;grid-template-columns:minmax(200px,2fr) repeat(3,minmax(140px,1fr));gap:10px}
 .filters2{display:grid;grid-template-columns:repeat(2,minmax(140px,190px)) 1fr;gap:10px;align-items:end}
 @media (max-width:760px){.filters{grid-template-columns:1fr 1fr}.filters .q{grid-column:1/-1}.filters2{grid-template-columns:1fr 1fr}}
+td.pick,th.pick{width:44px;padding-right:0;vertical-align:middle}
+.pick input{width:18px;height:18px;cursor:pointer;accent-color:var(--accent);margin:0}
+tr.selected td{background:var(--accent-soft)}
+.selbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--accent-soft);border-radius:10px;padding:8px 12px}
+.selbar b{color:var(--accent)}
 .hist{margin:0;padding:0;list-style:none;display:grid;gap:6px;font-size:13.5px}
 .hist li{display:grid;grid-template-columns:170px 1fr;gap:10px}
 @media (max-width:600px){.hist li{grid-template-columns:1fr}}
@@ -275,8 +280,8 @@ const S = {
   view:'request', adminTab:'categories',
   form:{catId:'', format:'regular', mnemonic:'', lines:[{type:'', qty:1}]},
   formErr:'', busy:false, busyMsg:'',
-  filters:{q:'', catId:'', docType:'', status:'', from:'', to:''}, showLimit:200, expanded:new Set(),
-  imports:[], range:{target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, msg:'', busy:false, done:''}, openCats:new Set(), showAllIds:new Set(),
+  filters:{q:'', catId:'', docType:'', status:'', from:'', to:''}, sel:new Set(), showLimit:200, expanded:new Set(),
+  imports:[], range:{target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, affix:false, prefix:'', suffix:'', msg:'', busy:false, done:''}, openCats:new Set(), showAllIds:new Set(),
   d:null,
 };
 const docTypes = (all=false) => {
@@ -502,7 +507,8 @@ async function runImport(imp){
   const p = imp.parsed; const ids = p.rows.filter(r=>!r.dup && !r.overlap).map(r=>[r.reg, r.meps||'']);
   if (!ids.length) throw new AppError('Every one of these Doc IDs is already in the system, so there is nothing to add.');
   const at = nowIso();
-  const source = {name:imp.fileName, importedAt:at, importedBy:S.uid, importedByName:myName(), count:ids.length, first:ids[0][0], last:ids[ids.length-1][0]};
+  const source = {name:imp.fileName, importedAt:at, importedBy:S.uid, importedByName:myName(), count:ids.length, first:ids[0][0], last:ids[ids.length-1][0],
+    mepsPrefix:p.mepsPrefix||'', mepsSuffix:p.mepsSuffix||''};
   const makeChunks = catId => { const chunks=[], docs=[];
     for (let i=0;i<ids.length;i+=POOL_CHUNK){ const id=catId+'__p'+rid(); const part=ids.slice(i,i+POOL_CHUNK);
       docs.push([id, {catId, regs:part.map(x=>x[0]), meps:part.map(x=>x[1])}]); chunks.push({id, count:part.length}); }
@@ -514,7 +520,8 @@ async function runImport(imp){
     const batch = S.db.batch();
     for (const [id,d] of docs) batch.set(S.db.doc('pool/'+id), d);
     batch.set(S.db.doc('categories/'+catId), {name, sourceFiles:[source], notes:p.notes, hasMeps:p.hasMeps, headerRegular:p.headerRegular,
-      headerMeps:p.headerMeps, total:ids.length, chunks, createdAt:at, createdBy:S.uid, lowThreshold:null, archived:false});
+      headerMeps:p.headerMeps, total:ids.length, chunks, createdAt:at, createdBy:S.uid, lowThreshold:null, archived:false,
+      mepsPrefix:p.mepsPrefix||'', mepsSuffix:p.mepsSuffix||''});
     await batch.commit();
     return catId;
   } else {
@@ -524,7 +531,8 @@ async function runImport(imp){
       const c = snap.data(); const {chunks, docs} = makeChunks(catId);
       for (const [id,d] of docs) tx.set(S.db.doc('pool/'+id), d);
       tx.update(catRef, {total:(c.total||0)+ids.length, chunks:[...(c.chunks||[]), ...chunks], sourceFiles:[...(c.sourceFiles||[]), source],
-        notes:[...new Set([...(c.notes||[]), ...p.notes])], hasMeps: !!(c.hasMeps||p.hasMeps)});
+        notes:[...new Set([...(c.notes||[]), ...p.notes])], hasMeps: !!(c.hasMeps||p.hasMeps),
+        ...(p.mepsPrefix!==undefined ? {mepsPrefix:p.mepsPrefix||'', mepsSuffix:p.mepsSuffix||''} : {})});
     });
     return catId;
   }
@@ -551,17 +559,23 @@ function buildRange(R){
   const ex = parseRangeList(R.exclude, first.length); if (ex.error) return {error:ex.error};
   const span = b-a+1n;
   if (span > BigInt(MAX_RANGE*3)) return {error:`That range covers ${span.toLocaleString()} numbers. Add ranges of up to ${MAX_RANGE.toLocaleString()} Doc IDs at a time.`};
+  const useAffix = R.meps && R.affix;
+  if (useAffix && !R.prefix && !R.suffix) return {error:'Type a prefix, a suffix, or both. Or untick “Add a prefix or suffix”.'};
+  if (useAffix && (R.prefix.length>20 || R.suffix.length>20)) return {error:'Keep the prefix and suffix to 20 characters or fewer.'};
+  // Digits typed in the prefix or suffix are turned into MEPS characters too; other characters are kept as typed.
+  const pre = useAffix ? toMeps(R.prefix) : '', suf = useAffix ? toMeps(R.suffix) : '';
   const rows=[]; let skipped=0;
   for (let n=a; n<=b; n++){
     const reg = n.toString().padStart(first.length,'0');
     const tail = Number(reg.slice(-3));
     if ((R.skipTop && tail>=900) || ex.list.some(([x,y])=>n>=x && n<=y)){ skipped++; continue; }
-    rows.push({reg, meps:R.meps?toMeps(reg):'', flags:[]});
+    rows.push({reg, meps:R.meps ? pre+toMeps(reg)+suf : '', flags:[]});
   }
   if (!rows.length) return {error:'Every number in this range is left out, so there is nothing to add.'};
   if (rows.length > MAX_RANGE) return {error:`That range has ${rows.length.toLocaleString()} Doc IDs. Add up to ${MAX_RANGE.toLocaleString()} at a time.`};
   const notes = R.notes.split('\n').map(t=>t.trim()).filter(Boolean);
-  const parsed = {name:R.name.trim(), notes, rows, hasMeps:R.meps, headerRegular:'Regular Numbers', headerMeps:'MEPS Numbers', sheetName:'', extraSheets:0};
+  const parsed = {name:R.name.trim(), notes, rows, hasMeps:R.meps, headerRegular:'Regular Numbers', headerMeps:'MEPS Numbers', sheetName:'', extraSheets:0,
+    mepsPrefix: useAffix ? R.prefix : '', mepsSuffix: useAffix ? R.suffix : ''};
   checkOverlap(parsed);
   return {parsed, skipped, first, last};
 }
@@ -920,6 +934,17 @@ function recordsView(){
   const setF=(k,v)=>{ F[k]=v; S.showLimit=200; render(); };
   let qT=0;
   const lookup = F.q && !list.length ? lookupUnassigned(F.q) : null;
+  const keyOf = r => r.catId+':'+r.idx;
+  const allRecs = derive().records;
+  for (const k of [...S.sel]) if (!allRecs.some(r=>keyOf(r)===k)) S.sel.delete(k);   // drop anything that no longer exists
+  const selCount = S.sel.size;
+  const inView = list.filter(r=>S.sel.has(keyOf(r))).length;
+  const hiddenSel = selCount - inView;
+  const selected = () => allRecs.filter(r=>S.sel.has(keyOf(r)));
+  const headBox = el('input',{type:'checkbox', 'aria-label': inView===list.length && list.length ? 'Unselect all records that match the filters' : 'Select all records that match the filters',
+    checked: list.length>0 && inView===list.length,
+    onchange:e=>{ if (e.target.checked) list.forEach(r=>S.sel.add(keyOf(r))); else list.forEach(r=>S.sel.delete(keyOf(r))); render(); }});
+  headBox.indeterminate = inView>0 && inView<list.length;
   return el('div',{class:'stack'},
     el('div',null, el('h1',null,'Records'), el('p',{class:'lede'},'Every Doc ID that has been handed out, with who got it and when. Search by Doc ID in either format, or by project mnemonic.')),
     el('div',{class:'card stack'},
@@ -933,14 +958,21 @@ function recordsView(){
         el('div',{class:'field'}, el('label',{for:'r-to'},'To'), el('input',{id:'r-to', type:'date', value:F.to, onchange:e=>setF('to',e.target.value)})),
         el('div',{class:'row', style:'justify-content:flex-end'},
           (F.q||F.catId||F.docType||F.status||F.from||F.to) ? el('button',{class:'btn ghost', onclick:()=>{S.filters={q:'',catId:'',docType:'',status:'',from:'',to:''}; render();}},'Clear filters') : null,
-          S.downloads ? el('button',{class:'btn', disabled:!list.length, onclick:()=>exportRecords(list,'csv')},'Export CSV') : null,
-          S.downloads ? el('button',{class:'btn', disabled:!list.length, onclick:()=>exportRecords(list,'xlsx')},'Export Excel') : null))),
+          el('button',{class:'btn', disabled:!list.length, title:'Export every record that matches the filters', onclick:()=>exportRecords(list,'csv')}, selCount ? 'Export all (CSV)' : 'Export CSV'),
+          el('button',{class:'btn', disabled:!list.length, title:'Export every record that matches the filters', onclick:()=>exportRecords(list,'xlsx')}, selCount ? 'Export all (Excel)' : 'Export Excel')))),
+    selCount ? el('div',{class:'selbar', role:'status'},
+      el('span',null, el('b',null, plural(selCount,'record')), ' selected', hiddenSel ? ` (${hiddenSel.toLocaleString()} not shown by the current filters)` : ''),
+      el('span',{class:'spacer'}),
+      el('button',{class:'btn ghost', onclick:()=>{ S.sel.clear(); render(); }}, 'Clear selection'),
+      el('button',{class:'btn primary', onclick:()=>exportRecords(selected(),'csv')}, 'Export selected (CSV)'),
+      el('button',{class:'btn primary', onclick:()=>exportRecords(selected(),'xlsx')}, 'Export selected (Excel)'))
+    : (list.length ? el('p',{class:'hint',style:'margin:0'}, 'Tick the boxes on the left to choose specific records to export.') : null),
     el('p',{class:'hint',style:'margin:0'}, list.length ? `Showing ${shown.length.toLocaleString()} of ${plural(list.length,'record')}.` : ''),
     lookup ? lookupNode(lookup) : null,
     !list.length && !lookup ? el('div',{class:'card empty-state'}, el('h2',null, derive().records.length?'No records match':'No Doc IDs handed out yet'),
       el('p',null, derive().records.length ? 'Try a different search or clear the filters.' : 'Records appear here as soon as someone requests Doc IDs.')) : null,
     list.length ? el('div',{class:'scroll'}, el('table',null,
-      el('thead',null, el('tr',null, ['Doc ID','Project','Category','Document type','Status','Assigned','By'].map(h=>el('th',{scope:'col'},h)))),
+      el('thead',null, el('tr',null, el('th',{class:'pick', scope:'col'}, headBox), ['Doc ID','Project','Category','Document type','Status','Assigned','By'].map(h=>el('th',{scope:'col'},h)))),
       el('tbody',null, shown.map(recordRows)))) : null,
     list.length>shown.length ? el('div',null, el('button',{class:'btn', onclick:()=>{S.showLimit+=500; render();}}, `Show ${Math.min(500,list.length-shown.length)} more`)) : null);
 }
@@ -953,12 +985,15 @@ function lookupNode(l){
 function recordRows(r){
   const key=r.catId+':'+r.idx; const open=S.expanded.has(key);
   const toggle=()=>{ open?S.expanded.delete(key):S.expanded.add(key); render(); };
-  const rows=[el('tr',{class:'clickable', tabindex:0, 'aria-expanded':String(open), onclick:toggle, onkeydown:e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();} }},
+  const picked=S.sel.has(key);
+  const rows=[el('tr',{class:'clickable'+(picked?' selected':''), tabindex:0, 'aria-expanded':String(open), onclick:toggle, onkeydown:e=>{ if(e.target===e.currentTarget && (e.key==='Enter'||e.key===' ')){e.preventDefault();toggle();} }},
+    el('td',{class:'pick', onclick:e=>e.stopPropagation()}, el('input',{type:'checkbox', checked:picked, 'aria-label':'Select Doc ID '+r.regular,
+      onchange:e=>{ e.target.checked ? S.sel.add(key) : S.sel.delete(key); render(); }})),
     el('td',{class:'id num'}, r.regular, r.meps ? el('span',{class:'sub'}, 'MEPS '+mepsDigits(r.meps)) : null),
     el('td',null, r.mnemonic), el('td',null, catName(r.catId)), el('td',null, r.docType),
     el('td',null, el('span',{class:'chip '+r.status}, r.status)),
     el('td',{style:'white-space:nowrap'}, fmtDate(r.reservedAt)), el('td',null, nameOf(r.reservedBy)))];
-  if (open) rows.push(el('tr',{class:'detail'}, el('td',{colspan:7}, el('div',{class:'stack',style:'gap:10px'},
+  if (open) rows.push(el('tr',{class:'detail'}, el('td',{colspan:8}, el('div',{class:'stack',style:'gap:10px'},
     el('div',{class:'row small'}, el('span',null, `Shown to requester as ${r.format==='meps'?'MEPS':'regular'} number.`),
       r.confirmedAt ? el('span',{class:'muted'}, `Done clicked ${fmtDate(r.confirmedAt)} by ${nameOf(r.confirmedBy)}.`) : null,
       el('span',{class:'spacer'}),
@@ -967,6 +1002,8 @@ function recordRows(r){
   return rows;
 }
 async function exportRecords(list, kind){
+  if (!list.length){ toast('Nothing to export.'); return; }
+  if (kind==='xlsx' && !window.XLSX){ toast('The Excel exporter didn’t load. Use Export CSV, or reload the page.'); return; }
   const who = await namesFor(list.flatMap(r=>[r.reservedBy, r.confirmedBy, r.cancelledBy]));
   const header=['Doc ID (Regular)','Doc ID (MEPS characters)','MEPS number (digits)','Shown as','Project mnemonic','Category','Document type','Status','Assigned at','Assigned by','Done at','Done by','Cancelled at','Cancelled by','Last change'];
   const rows=list.map(r=>{ const last=(r.history||[]).slice(-1)[0]||{};
@@ -1058,6 +1095,7 @@ function adminCategories(){
           el('dt',null,'Next Doc ID'), el('dd',{class:'num'}, p.arr[s.next] ? String(p.arr[s.next][0]) : 'None left'),
           el('dt',null,'Last Doc ID'), el('dd',{class:'num'}, p.arr.length ? String(p.arr[p.arr.length-1][0]) : '—'),
           el('dt',null,'Formats'), el('dd',null, c.hasMeps ? 'Regular and MEPS' : 'Regular only'),
+          (c.mepsPrefix||c.mepsSuffix) ? [el('dt',null,'MEPS prefix / suffix'), el('dd',null, `${c.mepsPrefix||'(none)'} / ${c.mepsSuffix||'(none)'}`)] : null,
           el('dt',null,'Ranges loaded'), el('dd',null, (c.sourceFiles||[]).map(f=>el('div',null, `${f.name}: ${f.first}–${f.last} (${f.count.toLocaleString()}), ${fmtDate(f.importedAt)}`)))),
         (c.notes||[]).length ? el('div',null, el('h3',null,'Notes from the spreadsheet'), el('ul',{class:'notes'}, c.notes.map(n=>el('li',null,n)))) : null,
         el('div',{class:'row',style:'align-items:flex-end'},
@@ -1090,7 +1128,8 @@ function adminRange(){
     el('div',{class:'req-grid'},
       el('div',{class:'card stack'},
         el('div',{class:'field'}, el('label',{for:'rg-t'},'Add these Doc IDs to'),
-          el('select',{id:'rg-t', value:R.target, onchange:e=>{R.target=e.target.value; R.msg=''; R.done=''; render();}},
+          el('select',{id:'rg-t', value:R.target, onchange:e=>{R.target=e.target.value; R.msg=''; R.done='';
+            const c=S.cats[R.target]; if (c){ R.prefix=c.mepsPrefix||''; R.suffix=c.mepsSuffix||''; R.affix=!!(R.prefix||R.suffix); } render();}},
             opt('new','A new category'), allCats().map(([id,c])=>opt(id,`Existing category: ${c.name}`)))),
         R.target==='new' ? el('div',{class:'field'}, el('label',{for:'rg-n'},'Category name'),
           el('input',{id:'rg-n', type:'text', value:R.name, placeholder:'e.g. 2028 JWB Document IDs', oninput:upd('name')})) : null,
@@ -1103,6 +1142,11 @@ function adminRange(){
           el('input',{id:'rg-x', type:'text', value:R.exclude, placeholder:'e.g. 902026300-902026309, 902026450', oninput:upd('exclude')}),
           el('span',{class:'hint'},'Single Doc IDs or ranges, separated by commas.')),
         el('label',{class:'row',style:'gap:8px;cursor:pointer'}, el('input',{id:'rg-m', type:'checkbox', checked:R.meps, onchange:upd('meps')}), 'Provide MEPS numbers too'),
+        R.meps ? el('label',{class:'row',style:'gap:8px;cursor:pointer;align-items:flex-start'}, el('input',{id:'rg-af', type:'checkbox', checked:R.affix, onchange:upd('affix'), style:'margin-top:4px'}),
+          el('span',null,'Add a prefix or suffix to the MEPS numbers', el('span',{class:'hint',style:'display:block'},'Regular numbers stay exactly as they are.'))) : null,
+        R.meps && R.affix ? el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:10px'},
+          el('div',{class:'field'}, el('label',{for:'rg-pre'},'MEPS prefix'), el('input',{id:'rg-pre', type:'text', value:R.prefix, autocomplete:'off', spellcheck:'false', placeholder:'e.g. S-', oninput:upd('prefix')})),
+          el('div',{class:'field'}, el('label',{for:'rg-suf'},'MEPS suffix'), el('input',{id:'rg-suf', type:'text', value:R.suffix, autocomplete:'off', spellcheck:'false', placeholder:'e.g. -E', oninput:upd('suffix')}))) : null,
         R.target==='new' ? el('div',{class:'field'}, el('label',{for:'rg-no'},'Notes (optional)'),
           el('textarea',{id:'rg-no', value:R.notes, placeholder:'e.g. 900-999 for vernacular only', oninput:upd('notes')}), el('span',{class:'hint'},'One note per line. Shown with the category when people request Doc IDs.')) : null),
       el('div',{class:'card stack', 'aria-live':'polite'},
@@ -1117,7 +1161,9 @@ function adminRange(){
            el('dt',null,'Formats'), el('dd',null, R.meps?'Regular and MEPS':'Regular only'),
            b.skipped ? [el('dt',null,'Left out'), el('dd',{class:'num'}, b.skipped.toLocaleString())] : null,
            tgtCat ? [el('dt',null,'After adding'), el('dd',{class:'num'}, `${(derive().stats[R.target].remaining+fresh.length).toLocaleString()} left in this category`)] : null),
-         R.meps && fresh[0] ? el('p',{class:'hint',style:'margin:0'}, `MEPS numbers are created in the MEPS Bookman Universal characters, the same as in your spreadsheets.`) : null,
+         R.meps && fresh[0] ? el('div',{class:'field'}, el('span',{class:'legend'},'First MEPS number'),
+           el('div',{class:'num',style:'font-size:20px;font-weight:600'}, mepsDigits(fresh[0].meps)),
+           el('span',{class:'hint'}, R.affix && (R.prefix||R.suffix) ? 'Digits, including any in the prefix or suffix, are created in MEPS Bookman Universal characters. Letters and symbols are kept exactly as typed.' : 'Created in MEPS Bookman Universal characters, the same as in your spreadsheets.')) : null,
          overl.length ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${overl.map(([cid,n])=>`${n.toLocaleString()} already in ${catName(cid)}`).join(', ')}. Those Doc IDs will be skipped so nothing can be handed out twice.`)) : null],
         R.msg ? el('p',{class:'err-text', role:'alert'}, R.msg) : null,
         R.done ? el('div',{class:'banner info'}, el('span',{class:'ico'}, el('i',null,'✓')), el('p',null,R.done)) : null,
@@ -1132,7 +1178,7 @@ async function addRange(){
   try {
     const cid = await runImport({parsed:b.parsed, name:R.name, target:R.target, fileName:`Range ${b.first}–${b.last}`});
     const name = catName(cid) === 'Unknown category' ? R.name.trim() : catName(cid);
-    S.range={target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, msg:'', busy:false,
+    S.range={target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, affix:false, prefix:'', suffix:'', msg:'', busy:false,
       done:`${plural(n,'Doc ID')} added to ${name}. Secretaries can request them now.`};
     toast('Range added.');
   } catch(e){
@@ -1221,6 +1267,7 @@ function adminReports(){
       el('tbody',null, Object.entries(months).sort().reverse().map(([m,n])=>el('tr',null, el('td',null, new Date(m+'-01T12:00:00').toLocaleDateString(undefined,{year:'numeric',month:'long'})), el('td',{class:'num'},n)))))) : null);
 }
 async function exportReport(){
+  if (!window.XLSX){ toast('The Excel exporter didn’t load. Reload the page and try again.'); return; }
   const {stats,records}=derive(); const wb=XLSX.utils.book_new();
   const cat=[['Category','Total','Used','Waiting for Done','Cancelled','Left','Issued %','Reminder level','Status']];
   for (const [id,c] of allCats()){ const s=stats[id]; cat.push([c.name,s.total,s.Assigned||0,s.Reserved||0,s.Cancelled||0,s.remaining, s.total?Math.round(s.issued/s.total*1000)/10:0, s.threshold, c.archived?'Retired':s.level==='ok'?'Healthy':s.level==='low'?'Running low':'Empty']); }
