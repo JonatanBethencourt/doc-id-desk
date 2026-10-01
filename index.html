@@ -277,7 +277,7 @@ function toast(msg, ms=3200){ const t=document.getElementById('toast'); t.textCo
 /* ---------- State ---------- */
 const S = {
   db:null, auth:null, downloads:true, uid:null, me:{email:'',name:''}, isAdmin:false, canWrite:true, fatal:null, ready:false,
-  phase:'loading', authErr:'', authMsg:'', si:{user:'', pw:'', link:''}, people:{name:'', username:'', userEdited:false, role:'secretary', method:'password', email:'', pw:'', busy:false, msg:'', err:''}, members:{}, unsubs:[],
+  phase:'loading', rulesBlocked:new Set(), authErr:'', authMsg:'', si:{user:'', pw:'', link:''}, people:{name:'', username:'', userEdited:false, role:'secretary', method:'password', email:'', pw:'', busy:false, msg:'', err:''}, members:{}, unsubs:[],
   cats:{}, pools:{}, alloc:{}, rec:{}, config:{},
   loaded:{cats:false,pools:false,alloc:false,rec:false,config:false,bank:false}, bank:{},
   view:'request', adminTab:'categories',
@@ -795,6 +795,13 @@ function renderWho(){
 }
 function renderBanners(){
   const b=document.getElementById('banners'); const out=[];
+  if (S.phase==='app' && S.rulesBlocked.size){
+    const names={bank:'the Doc ID Bank', rec:'the records', alloc:'the Doc ID counters', categories:'the categories', pool:'the Doc ID lists', config:'the settings'};
+    const what=[...S.rulesBlocked].map(c=>names[c]||c).join(', ');
+    out.push(banner('err', S.isAdmin
+      ? [el('strong',null,'The database rules are out of date.'), ` Doc ID Desk can’t read ${what}. In Firebase, go to Firestore Database → Rules, paste the newest firestore.rules from GitHub, click Publish, then reload this page.`]
+      : [el('strong',null,'Some information couldn’t be loaded.'), ' Ask an administrator to update the database rules.']));
+  }
   if (S.ready){
     const {stats}=derive();
     for (const [cid,c] of activeCats()){
@@ -1715,9 +1722,16 @@ function subscribe(){
       S[key]=m; S.loaded[key]=true; invalidate();
       if (!S.ready && Object.values(S.loaded).every(Boolean)) S.ready=true;
       schedule();
-    }, err=>{
+    }, async err=>{
       S.loaded[key]=true; if (Object.values(S.loaded).every(Boolean)) S.ready=true;
-      if (err && err.code==='permission-denied'){ S.phase='noaccess'; S.noAccessMsg='Your access was removed or changed. Ask an administrator, then reload.'; }
+      if (err && err.code==='permission-denied'){
+        // Only lock someone out if they really are no longer on the People list.
+        // Otherwise the database rules are older than this version of the app.
+        let stillMember=false;
+        try { stillMember = (await S.db.doc('members/'+S.me.email).get()).exists; } catch(e){}
+        if (stillMember){ S.rulesBlocked.add(coll); invalidate(); }
+        else { S.phase='noaccess'; S.noAccessMsg='Your access was removed or changed. Ask an administrator, then reload.'; }
+      }
       else toast('Live updates paused. Reload the page if numbers look out of date.', 6000);
       schedule();
     }));
@@ -1725,7 +1739,7 @@ function subscribe(){
   if (S.isAdmin) S.unsubs.push(S.db.collection('members').onSnapshot(snap=>{ const m={}; for (const d of snap.docs) m[d.id]=d.data(); S.members=m; invalidate(); schedule(); }, ()=>{}));
 }
 function resetData(){
-  S.unsubs.forEach(u=>{ try{u();}catch(e){} }); S.unsubs=[];
+  S.unsubs.forEach(u=>{ try{u();}catch(e){} }); S.unsubs=[]; S.rulesBlocked=new Set();
   Object.assign(S, {cats:{}, pools:{}, alloc:{}, rec:{}, config:{}, bank:{}, members:{}, ready:false, isAdmin:false, d:null});
   for (const k of Object.keys(S.loaded)) S.loaded[k]=false;
 }

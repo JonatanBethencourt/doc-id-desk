@@ -81,8 +81,8 @@ service cloud.firestore {
     // can be handed out a second time by accident. "returned" lists Doc IDs an
     // administrator released back to the range: only administrators can add to it;
     // anyone handing out Doc IDs can only take from it.
-    function onlyRemoves(after, before) {
-      return after.toSet().difference(before.toSet()).size() == 0;
+    function onlyRemoves(newList, oldList) {
+      return newList.toSet().difference(oldList.toSet()).size() == 0;
     }
     match /alloc/{catId} {
       allow read: if isMember();
