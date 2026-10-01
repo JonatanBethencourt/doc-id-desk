@@ -60,6 +60,12 @@ service cloud.firestore {
       allow list, create, update, delete: if isAdmin();
     }
 
+    // Doc ID Bank: unused Doc IDs from closed categories, waiting to be reused.
+    match /bank/{id} {
+      allow read: if isMember();
+      allow create, update, delete: if isAdmin();
+    }
+
     // Categories and their pools of Doc IDs: administrators only.
     match /categories/{id} {
       allow read: if isMember();
@@ -71,13 +77,20 @@ service cloud.firestore {
       allow update, delete: if false;   // a loaded pool is never edited
     }
 
-    // Allocation pointer per category: it can only ever move forward,
-    // so no Doc ID can be handed out a second time.
+    // Allocation pointer per category: it can only ever move forward, so no Doc ID
+    // can be handed out a second time by accident. "returned" lists Doc IDs an
+    // administrator released back to the range: only administrators can add to it;
+    // anyone handing out Doc IDs can only take from it.
+    function onlyRemoves(after, before) {
+      return after.toSet().difference(before.toSet()).size() == 0;
+    }
     match /alloc/{catId} {
       allow read: if isMember();
-      allow create: if isMember() && request.resource.data.next is int && request.resource.data.next >= 0;
+      allow create: if isMember() && request.resource.data.next is int && request.resource.data.next >= 0
+        && (isAdmin() || request.resource.data.get('returned', []).size() == 0);
       allow update: if isMember() && request.resource.data.next is int
-        && request.resource.data.next >= resource.data.next;
+        && request.resource.data.next >= resource.data.next
+        && (isAdmin() || onlyRemoves(request.resource.data.get('returned', []), resource.data.get('returned', [])));
       allow delete: if false;
     }
 

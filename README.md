@@ -54,20 +54,58 @@ from the security rules in the next step.
 1. Open your GitHub Pages address and sign in.
 2. You'll see **Set up Doc ID Desk**. Click **Make me the administrator**.
    Only the very first person can do this, so do it straight away after publishing.
-3. Go to **Admin → People** and add everyone else by email address, as **Secretary** or
-   **Administrator**. Only people on this list can sign in.
+3. Go to **Admin → People** and add everyone else with their **name**, **role** (Secretary or
+   Administrator), a **username** (filled in from the name; you can change it) and a
+   **password** (at least 8 characters; **Suggest one** makes one for you). Give each person
+   their username and password privately. Only people on this list can sign in.
 4. Go to **Admin → Add a range** and create your categories, for example
    *2026 JWB Document IDs* from `902026254` to `902026899`.
 
 ## Everyday use
 - **Secretaries**: Request tab → choose category, Regular or MEPS, document type(s), project
   mnemonic and how many → copy the Doc IDs from the pop-up → click **Done**.
+- **Exporting records**: on the Records tab, tick the boxes on the left to choose specific
+  records (the top box selects everything that matches the filters), then click
+  **Export selected**. **Export all** exports every record that matches the filters.
+- **MEPS prefix or suffix**: when adding a range, tick **Add a prefix or suffix to the MEPS
+  numbers** to add text before or after each MEPS number (for example `S-902026254-E1`).
+  Regular numbers are not changed.
 - **Administrators**: Admin tab to add ranges or upload spreadsheets, correct or cancel
   assignments, see what's waiting for Done, view utilization reports, manage document
   types and people.
 
-People sign in with **Google** or with a **sign-in link sent by email** (works for any email
-address, including work addresses).
+People sign in with the **username and password** an administrator gave them. No email address
+is needed. Anyone can change their own password with **Change password** at the top of the page.
+If someone forgets it, an administrator clicks **Reset password** next to their name in
+**Admin → People**; the old password stops working straight away.
+
+Administrators can also sign in with **Google** or a **sign-in link sent by email**, under
+**Other ways to sign in**.
+
+## Reserving Doc IDs and releasing them
+Every Doc ID is **Reserved** from the moment it's handed out until someone clicks **Done**.
+- To hold Doc IDs for later, click **Keep reserved** in the pop-up and write what they're for
+  (for example "Second script, needed in November"). The note appears in Records and exports.
+- If reserved Doc IDs end up not being needed, an administrator can **release** them, from
+  **Admin → Reserved** or from the record's **Correct, release or cancel** window. A reason is
+  required. Released Doc IDs go back to their category and are handed out **first** on the next
+  request; the old record stays in the history with the status **Released**. Only release Doc IDs
+  that were never pasted into any document. If the category is closed, they go to the Doc ID Bank.
+- **Cancelled** is different: a cancelled Doc ID is never reused, because it may have been used
+  somewhere. Only Reserved Doc IDs can be released.
+
+## Closing a category and the Doc ID Bank
+When a project is over, go to **Admin → Categories**, open **Details and settings** for that
+category and click **Close category**.
+- Every Doc ID the category never handed out moves to the **Doc ID Bank**.
+- Doc IDs already handed out stay with the category with all their records, and are never
+  reused (including cancelled ones). Anything still waiting for Done can still be confirmed.
+- Secretaries can no longer request Doc IDs from it. Closing can't be undone.
+
+To reuse banked Doc IDs, go to **Admin → Add a range**, choose **The Doc ID Bank** at the top,
+pick where to take them from and how many, and add them to a new or existing category (with
+a MEPS prefix or suffix if you like). The **Doc ID Bank** tab shows what's there and where
+it came from.
 
 ## How Doc IDs are protected
 - Every hand-out is a database **transaction**. If two people request at the same moment,

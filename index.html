@@ -131,6 +131,8 @@ input:disabled,select:disabled{opacity:.6}
 .chip.Assigned{background:var(--ok-bg);color:var(--ok)}
 .chip.Reserved{background:var(--warn-bg);color:var(--warn)}
 .chip.Cancelled{background:var(--bad-bg);color:var(--bad)}
+.chip.Released{background:var(--chip);color:var(--muted)}
+.forline{display:block;font-size:12.5px;color:var(--muted);margin-top:3px;max-width:220px}
 .chip.ok{background:var(--ok-bg);color:var(--ok)}
 .chip.low{background:var(--warn-bg);color:var(--warn)}
 .chip.empty{background:var(--bad-bg);color:var(--bad)}
@@ -228,8 +230,9 @@ const LOCK_TTL = 15000;          // category lock lease (ms)
 const MAX_PER_REQUEST = 100;
 const MAX_RANGE = 10000;        // Doc IDs per range
 const DEFAULT_TYPES = ['Script','Hosting Document','Lead Sheet'];
-const STATUSES = ['Reserved','Assigned','Cancelled'];
-const STATUS_HELP = {Reserved:'Waiting for Done', Assigned:'Used', Cancelled:'Cancelled — never reused'};
+const STATUSES = ['Reserved','Assigned','Cancelled','Released'];
+const EDIT_STATUSES = ['Reserved','Assigned','Cancelled'];
+const STATUS_HELP = {Reserved:'Waiting for Done', Assigned:'Used', Cancelled:'Cancelled — never reused', Released:'Released — back in the range'};
 const TAB_ID = Math.random().toString(36).slice(2,10);
 
 /* ---------- MEPS character handling ----------
@@ -276,12 +279,12 @@ const S = {
   db:null, auth:null, downloads:true, uid:null, me:{email:'',name:''}, isAdmin:false, canWrite:true, fatal:null, ready:false,
   phase:'loading', authErr:'', authMsg:'', si:{user:'', pw:'', link:''}, people:{name:'', username:'', userEdited:false, role:'secretary', method:'password', email:'', pw:'', busy:false, msg:'', err:''}, members:{}, unsubs:[],
   cats:{}, pools:{}, alloc:{}, rec:{}, config:{},
-  loaded:{cats:false,pools:false,alloc:false,rec:false,config:false},
+  loaded:{cats:false,pools:false,alloc:false,rec:false,config:false,bank:false}, bank:{},
   view:'request', adminTab:'categories',
   form:{catId:'', format:'regular', mnemonic:'', lines:[{type:'', qty:1}]},
   formErr:'', busy:false, busyMsg:'',
   filters:{q:'', catId:'', docType:'', status:'', from:'', to:''}, sel:new Set(), showLimit:200, expanded:new Set(),
-  imports:[], range:{target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, affix:false, prefix:'', suffix:'', msg:'', busy:false, done:''}, openCats:new Set(), showAllIds:new Set(),
+  imports:[], range:{target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, affix:false, prefix:'', suffix:'', source:'range', bankDep:'any', bankQty:'', msg:'', busy:false, done:''}, openCats:new Set(), showAllIds:new Set(),
   d:null,
 };
 const docTypes = (all=false) => {
@@ -307,7 +310,7 @@ function derive(){
   }
   records.sort((a,b)=> String(b.reservedAt||'').localeCompare(String(a.reservedAt||'')) || (b.idx-a.idx));
   for (const [cid,c] of Object.entries(S.cats)){
-    const s = {total:c.total||0, Reserved:0, Assigned:0, Cancelled:0, maxIdx:-1, byType:{}};
+    const s = {total:c.total||0, Reserved:0, Assigned:0, Cancelled:0, Released:0, maxIdx:-1, byType:{}, returned:[]};
     stats[cid]=s;
   }
   for (const e of records){
@@ -315,16 +318,47 @@ function derive(){
     s[e.status] = (s[e.status]||0)+1; if (e.idx>s.maxIdx) s.maxIdx=e.idx;
     const bt = s.byType[e.docType] ||= {Reserved:0,Assigned:0,Cancelled:0}; bt[e.status]=(bt[e.status]||0)+1;
   }
+  const statusesByIdx={};
+  for (const e of records) (((statusesByIdx[e.catId] ||= {})[e.idx]) ||= []).push(e.status);
   for (const [cid,s] of Object.entries(stats)){
+    const c=S.cats[cid];
+    s.returned = [...new Set(S.alloc[cid]?.returned||[])].filter(i=>{ const st=statusesByIdx[cid]?.[i]; return st && st.length && st.every(x=>x==='Released'); }).sort((a,b)=>a-b);
+    if (c.closed){
+      s.total=c.closedNext||0; s.next=s.total; s.remaining=0; s.issued=s.total; s.released=c.released||0; s.threshold=0; s.level='closed';
+      continue;
+    }
     const next = Math.max(S.alloc[cid]?.next||0, s.maxIdx+1);
-    s.next=next; s.remaining=Math.max(0, s.total-next); s.issued=next;
-    const c=S.cats[cid]; s.threshold = Number.isFinite(c.lowThreshold) ? c.lowThreshold : Math.max(10, Math.round(s.total*0.1));
+    s.next=next; s.remaining=Math.max(0, s.total-next)+s.returned.length; s.issued=next-s.returned.length;
+    s.nextIdx = s.returned.length ? s.returned[0] : next; s.threshold = Number.isFinite(c.lowThreshold) ? c.lowThreshold : Math.max(10, Math.round(s.total*0.1));
     s.level = s.remaining===0 ? 'empty' : (s.remaining<=s.threshold ? 'low' : 'ok');
   }
   return (S.d={pools,stats,records,names});
 }
-const catName = id => S.cats[id]?.name || 'Unknown category';
-const activeCats = () => Object.entries(S.cats).filter(([,c])=>!c.archived).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
+const catName = id => id==='bank' ? 'the Doc ID Bank' : (S.cats[id]?.name || 'Unknown category');
+const activeCats = () => Object.entries(S.cats).filter(([,c])=>!c.archived && !c.closed).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
+const openCats = () => Object.entries(S.cats).filter(([,c])=>!c.closed).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
+const levelLabel = (c,s) => c.closed ? 'Closed' : c.archived ? 'Retired' : s.level==='ok' ? 'Healthy' : s.level==='low' ? 'Running low' : 'Empty';
+const levelClass = (c,s) => c.closed || c.archived ? '' : s.level;
+const cmpId = (a,b) => String(a).localeCompare(String(b), undefined, {numeric:true});
+/* Everything currently in the Doc ID Bank, lowest number first. */
+const depGroup = d => (d.sourceCatId||'')+'|'+(d.releasedAt||'');
+/* One entry per closing (a closing may be stored in several documents). */
+function bankGroups(){
+  const g=new Map();
+  for (const d of Object.values(S.bank)){ const k=depGroup(d); if (!(d.regs||[]).length) continue;
+    if (!g.has(k)) g.set(k,{key:k, sourceName:d.sourceName, releasedAt:d.releasedAt, releasedBy:d.releasedBy, releasedByName:d.releasedByName, regs:[]});
+    for (const r of d.regs) g.get(k).regs.push(String(r)); }
+  return [...g.values()].map(x=>({...x, regs:x.regs.sort(cmpId)})).sort((a,b)=>String(b.releasedAt||'').localeCompare(String(a.releasedAt||'')));
+}
+function bankEntries(depFilter){
+  const out=[];
+  for (const [id,d] of Object.entries(S.bank)){
+    if (depFilter && depFilter!=='any' && depGroup(d)!==depFilter) continue;
+    const r=d.regs||[], m=d.meps||[];
+    for (let i=0;i<r.length;i++) out.push({reg:String(r[i]), meps:m[i]||'', dep:id});
+  }
+  return out.sort((a,b)=>cmpId(a.reg,b.reg));
+}
 const allCats = () => Object.entries(S.cats).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
 
 /* ---------- People ---------- */
@@ -341,6 +375,7 @@ async function namesFor(){ return nameOf; }
    people collide, so the same Doc ID can never be given to two requests. The security
    rules also refuse any write that would move the pointer backwards. */
 const recKey = idx => 'i'+idx;
+const rk = r => r.key || recKey(r.idx);   // a Doc ID handed out again after release gets its own record
 const recRefFor = (catId, c) => S.db.doc('rec/'+catId+'__r'+c);
 function poolArr(p){ const r=p.regs||[], m=p.meps||[], out=new Array(r.length); for (let i=0;i<r.length;i++) out[i]=[r[i], m[i]||'']; return out; }
 async function freshPool(cat){
@@ -365,58 +400,188 @@ async function allocate({catId, lines, mnemonic, format}){
     if (!cs.exists) throw new AppError('This category no longer exists.');
     const cat = cs.data();
     if (cat.archived) throw new AppError('This category has been retired by an administrator.');
+    if (cat.closed) throw new AppError('This category has been closed. Choose another category.');
     if ((cat.total||0) !== pool.length) pool = await freshPool(cat);
     const as = await tx.get(allocRef);
     let next = as.exists ? (as.data().next||0) : 0;
-    // Safety net: never trust the pointer alone — skip past anything already in the ledger.
+    const returned = as.exists ? (as.data().returned||[]) : [];
     const seen = {};
+    const getChunk = async c => (seen[c] ||= await tx.get(recRefFor(catId,c)));
+    // Safety net: never trust the pointer alone — skip past anything already in the ledger.
     for (let guard=0; guard<50; guard++){
       let bumped=false;
       const first=Math.floor(next/REC_CHUNK), last=Math.max(first, Math.floor((Math.min(next+count, pool.length)-1)/REC_CHUNK));
       for (let c=first; c<=last; c++){
-        if (!seen[c]) seen[c] = await tx.get(recRefFor(catId,c));
-        const ents = seen[c].exists ? (seen[c].data().entries||{}) : {};
+        const ents = (await getChunk(c)).exists ? (seen[c].data().entries||{}) : {};
         for (const e of Object.values(ents)) if (e.idx>=next){ next=e.idx+1; bumped=true; }
       }
       if (!bumped) break;
     }
-    const remaining = pool.length - next;
+    // Released Doc IDs go first, but only if every record for them really is Released.
+    const okReturned=[];
+    for (const idx of [...new Set(returned)].filter(n=>Number.isInteger(n) && n>=0 && n<next).sort((a,b)=>a-b)){
+      const ch = await getChunk(Math.floor(idx/REC_CHUNK)); const ents = ch.exists ? (ch.data().entries||{}) : {};
+      const recs = Object.values(ents).filter(e=>e.idx===idx);
+      if (recs.length && recs.every(e=>e.status==='Released')) okReturned.push(idx);
+    }
+    const remaining = okReturned.length + pool.length - next;
     if (remaining < count) throw new AppError(remaining===0
       ? `There are no Doc IDs left in ${cat.name}. An administrator needs to add a new range.`
       : `Only ${plural(remaining,'Doc ID')} left in ${cat.name}, but you asked for ${count}. Lower the number or ask an administrator for a new range.`, {remaining});
-    const at = nowIso(); const items=[]; let i=next;
-    for (const l of lines) for (let k=0;k<l.qty;k++,i++){
-      const [regular, meps] = pool[i];
-      items.push({idx:i, catId, regular:String(regular), meps:meps?String(meps):'', format, mnemonic, docType:l.docType,
+    const slots = okReturned.slice(0, count); let i=next;
+    while (slots.length<count) slots.push(i++);
+    for (const idx of slots) await getChunk(Math.floor(idx/REC_CHUNK));
+    const at = nowIso(); const items=[]; let si=0;
+    for (const l of lines) for (let k=0;k<l.qty;k++){
+      const idx=slots[si++]; const [regular, meps] = pool[idx];
+      const ch=seen[Math.floor(idx/REC_CHUNK)]; const ents = ch && ch.exists ? (ch.data().entries||{}) : {};
+      const before = Object.values(ents).filter(e=>e.idx===idx).length;
+      items.push({idx, key: before ? `i${idx}_${before}` : recKey(idx), issue: before+1, catId, regular:String(regular), meps:meps?String(meps):'', format, mnemonic, docType:l.docType,
         status:'Reserved', reqId, reservedAt:at, reservedBy:S.uid, reservedByName:myName(),
-        history:[{at, by:S.uid, byName:myName(), action:'Handed out', note:`${l.docType} for project ${mnemonic}`}]});
+        history:[{at, by:S.uid, byName:myName(), action: before ? 'Handed out again' : 'Handed out', note:`${l.docType} for project ${mnemonic}${before?' (it had been released back to the range)':''}`}]});
     }
     const byChunk={};
-    for (const it of items) (byChunk[Math.floor(it.idx/REC_CHUNK)] ||= {})[recKey(it.idx)] = it;
+    for (const it of items) (byChunk[Math.floor(it.idx/REC_CHUNK)] ||= {})[it.key] = it;
     for (const [c, entries] of Object.entries(byChunk)) tx.set(recRefFor(catId,c), {catId, chunk:Number(c), entries}, {merge:true});
-    tx.set(allocRef, {next:i, updatedAt:at, updatedBy:S.uid});
-    return {cat, catId, items, reqId};
+    tx.set(allocRef, {next:i, returned:okReturned.slice(count), updatedAt:at, updatedBy:S.uid});
+    return {cat, catId, items, reqId, left: remaining-count};
   });
 }
 
 /* Update a set of records atomically. mutate(entry) returns the new entry or null to skip. */
 async function mutateRecords(refs, mutate){
   const byCat={};
-  for (const r of refs) (byCat[r.catId] ||= []).push(r.idx);
-  for (const [catId, idxs] of Object.entries(byCat)){
+  for (const r of refs) (byCat[r.catId] ||= []).push(r);
+  for (const [catId, list0] of Object.entries(byCat)){
     await S.db.runTransaction(async tx=>{
       const byChunk={};
-      for (const idx of idxs) (byChunk[Math.floor(idx/REC_CHUNK)] ||= []).push(idx);
+      for (const r of list0) (byChunk[Math.floor(r.idx/REC_CHUNK)] ||= []).push(r);
       const snaps={};
       for (const c of Object.keys(byChunk)) snaps[c] = await tx.get(recRefFor(catId,c));
       for (const [c, list] of Object.entries(byChunk)){
         if (!snaps[c].exists) continue;
         const ents = snaps[c].data().entries||{}; const patch={};
-        for (const idx of list){ const e = ents[recKey(idx)]; if (!e) continue; const ne = mutate(JSON.parse(JSON.stringify(e))); if (ne) patch[recKey(idx)] = ne; }
+        for (const r of list){ const k=rk(r); const e = ents[k]; if (!e) continue; const ne = mutate(JSON.parse(JSON.stringify(e))); if (ne) patch[k] = ne; }
         if (Object.keys(patch).length) tx.set(recRefFor(catId,c), {entries:patch}, {merge:true});
       }
     });
   }
+}
+/* Release Reserved Doc IDs back to their category, to be handed out again (administrators only).
+   If the category is closed, they go to the Doc ID Bank instead. */
+async function releaseRecords(refs, reason){
+  const byCat={}; for (const r of refs) (byCat[r.catId] ||= []).push(r);
+  let count=0;
+  for (const [catId, list] of Object.entries(byCat)){
+    const catRef=S.db.doc('categories/'+catId), allocRef=S.db.doc('alloc/'+catId);
+    const c0=await catRef.get(); if (!c0.exists) throw new AppError('This category no longer exists.');
+    const pool=await freshPool(c0.data());
+    count += await S.db.runTransaction(async tx=>{
+      const c=(await tx.get(catRef)).data(); const a=await tx.get(allocRef);
+      const byChunk={}; for (const r of list) (byChunk[Math.floor(r.idx/REC_CHUNK)] ||= []).push(r);
+      const snaps={}; for (const ch of Object.keys(byChunk)) snaps[ch]=await tx.get(recRefFor(catId,ch));
+      const at=nowIso(); const freed=[];
+      for (const [ch, rs] of Object.entries(byChunk)){
+        if (!snaps[ch].exists) continue;
+        const ents=snaps[ch].data().entries||{}; const patch={};
+        for (const r of rs){ const k=rk(r); const e=ents[k]; if (!e || e.status!=='Reserved') continue;
+          patch[k]={...JSON.parse(JSON.stringify(e)), status:'Released', releasedAt:at, releasedBy:S.uid, releasedByName:myName(),
+            history:[...(e.history||[]), {at, by:S.uid, byName:myName(), action: c.closed ? 'Released to the Doc ID Bank' : 'Released back to the range', note:reason||''}]};
+          freed.push(e.idx); }
+        if (Object.keys(patch).length) tx.set(recRefFor(catId,ch), {entries:patch}, {merge:true});
+      }
+      if (!freed.length) return 0;
+      if (c.closed){
+        const part=freed.map(i=>pool[i]).filter(Boolean);
+        tx.set(S.db.doc('bank/'+catId+'__b'+rid()), {sourceCatId:catId, sourceName:c.name, regs:part.map(x=>String(x[0])), meps:part.map(x=>x[1]||''),
+          count:part.length, releasedAt:at, releasedBy:S.uid, releasedByName:myName()});
+      } else {
+        const ad=a.exists?a.data():{next:0};
+        tx.set(allocRef, {next:ad.next||0, returned:[...new Set([...(ad.returned||[]), ...freed])], updatedAt:at, updatedBy:S.uid});
+      }
+      return freed.length;
+    });
+  }
+  return count;
+}
+/* Close a category: stop requests for good and move every Doc ID that was never handed out to the Doc ID Bank. */
+async function closeCategory(catId){
+  const catRef=S.db.doc('categories/'+catId), allocRef=S.db.doc('alloc/'+catId);
+  const c0=await catRef.get(); if (!c0.exists) throw new AppError('This category no longer exists.');
+  let pool=await freshPool(c0.data());
+  return S.db.runTransaction(async tx=>{
+    const cs=await tx.get(catRef); const c=cs.data();
+    if (c.closed) throw new AppError('This category is already closed.');
+    if ((c.total||0)!==pool.length) pool=await freshPool(c);
+    const as=await tx.get(allocRef); let next=as.exists?(as.data().next||0):0;
+    for (let ch=Math.floor(next/REC_CHUNK); ch<=Math.floor((pool.length-1)/REC_CHUNK); ch++){
+      const rs=await tx.get(recRefFor(catId,ch));
+      if (rs.exists) for (const e of Object.values(rs.data().entries||{})) if (e.idx>=next) next=e.idx+1;
+    }
+    const back=[];
+    for (const idx of [...new Set(as.exists?(as.data().returned||[]):[])].filter(n=>Number.isInteger(n) && n>=0 && n<next)){
+      const rs=await tx.get(recRefFor(catId,Math.floor(idx/REC_CHUNK)));
+      const recs=rs.exists ? Object.values(rs.data().entries||{}).filter(e=>e.idx===idx) : [];
+      if (recs.length && recs.every(e=>e.status==='Released')) back.push(idx);
+    }
+    const released=[...back.sort((x,y)=>x-y).map(i=>pool[i]), ...pool.slice(next)]; const at=nowIso();
+    for (let i=0;i<released.length;i+=POOL_CHUNK){
+      const part=released.slice(i,i+POOL_CHUNK);
+      tx.set(S.db.doc('bank/'+catId+'__b'+rid()), {sourceCatId:catId, sourceName:c.name, regs:part.map(x=>String(x[0])), meps:part.map(x=>x[1]||''),
+        count:part.length, releasedAt:at, releasedBy:S.uid, releasedByName:myName()});
+    }
+    tx.set(allocRef, {next:pool.length, returned:[], updatedAt:at, updatedBy:S.uid});   // the pointer can only move forward, so nothing here can be handed out again
+    tx.update(catRef, {closed:true, closedAt:at, closedBy:S.uid, closedByName:myName(), closedNext:next, released:released.length});
+    return {released:released.length, issued:next-back.length};
+  });
+}
+/* Pick Doc IDs from the bank for the Add a range screen. */
+function buildBankPick(R){
+  const all=bankEntries(R.bankDep);
+  if (!all.length) return {error: Object.keys(S.bank).length ? 'That part of the Doc ID Bank is empty.' : 'The Doc ID Bank is empty. Doc IDs arrive here when you close a category.'};
+  const n = String(R.bankQty).trim()==='' ? all.length : parseInt(R.bankQty,10);
+  if (!Number.isInteger(n) || n<1) return {error:'Enter how many Doc IDs to take (1 or more).'};
+  if (n>all.length) return {error:`The Doc ID Bank only has ${plural(all.length,'Doc ID')} here.`};
+  if (n>MAX_RANGE) return {error:`Take up to ${MAX_RANGE.toLocaleString()} Doc IDs at a time.`};
+  const useAffix = R.meps && R.affix;
+  if (useAffix && !R.prefix && !R.suffix) return {error:'Type a prefix, a suffix, or both. Or untick “Add a prefix or suffix”.'};
+  if (useAffix && (R.prefix.length>20 || R.suffix.length>20)) return {error:'Keep the prefix and suffix to 20 characters or fewer.'};
+  const pre=useAffix?toMeps(R.prefix):'', suf=useAffix?toMeps(R.suffix):'';
+  const rows=all.slice(0,n).map(e=>({reg:e.reg, dep:e.dep, meps: !R.meps ? '' : (/^\d+$/.test(e.reg) ? pre+toMeps(e.reg)+suf : e.meps)}));
+  return {rows, available:all.length, mepsPrefix:useAffix?R.prefix:'', mepsSuffix:useAffix?R.suffix:''};
+}
+/* Move Doc IDs out of the bank into a new or existing category, in one transaction. */
+async function withdrawFromBank(R, pick){
+  const byDep={}; for (const r of pick.rows) (byDep[r.dep] ||= new Set()).add(r.reg);
+  const ids=pick.rows.map(r=>[r.reg, r.meps]); const at=nowIso();
+  const fromNames=[...new Set(Object.keys(byDep).map(d=>S.bank[d]?.sourceName).filter(Boolean))];
+  const source={name:`Doc ID Bank${fromNames.length?` (from ${fromNames.join(', ')})`:''}`, importedAt:at, importedBy:S.uid, importedByName:myName(),
+    count:ids.length, first:ids[0][0], last:ids[ids.length-1][0], mepsPrefix:pick.mepsPrefix, mepsSuffix:pick.mepsSuffix};
+  const name=R.name.trim(); const isNew=R.target==='new';
+  if (isNew && !name) throw new AppError('Give the category a name.');
+  const catId = isNew ? 'c-'+slug(name)+'-'+Math.random().toString(36).slice(2,6) : R.target;
+  const notes = R.notes.split('\n').map(t=>t.trim()).filter(Boolean);
+  const taken='Some of these Doc IDs were just taken from the Doc ID Bank by someone else. Nothing was changed. Try again.';
+  await S.db.runTransaction(async tx=>{
+    const snaps={}; for (const d of Object.keys(byDep)) snaps[d]=await tx.get(S.db.doc('bank/'+d));
+    let c=null;
+    if (!isNew){ const cs=await tx.get(S.db.doc('categories/'+catId)); if (!cs.exists) throw new AppError('That category no longer exists.'); c=cs.data(); if (c.closed) throw new AppError('That category is closed.'); }
+    for (const [d,set] of Object.entries(byDep)){
+      const sn=snaps[d]; if (!sn.exists) throw new AppError(taken);
+      const data=sn.data(); const regs=(data.regs||[]).map(String), meps=data.meps||[];
+      const have=new Set(regs); for (const r of set) if (!have.has(r)) throw new AppError(taken);
+      const kr=[], km=[]; regs.forEach((r,i)=>{ if (!set.has(r)){ kr.push(r); km.push(meps[i]||''); } });
+      if (kr.length) tx.update(S.db.doc('bank/'+d), {regs:kr, meps:km, count:kr.length}); else tx.delete(S.db.doc('bank/'+d));
+    }
+    const chunks=[];
+    for (let i=0;i<ids.length;i+=POOL_CHUNK){ const id=catId+'__p'+rid(); const part=ids.slice(i,i+POOL_CHUNK);
+      tx.set(S.db.doc('pool/'+id), {catId, regs:part.map(x=>x[0]), meps:part.map(x=>x[1])}); chunks.push({id, count:part.length}); }
+    if (isNew) tx.set(S.db.doc('categories/'+catId), {name, sourceFiles:[source], notes, hasMeps:!!R.meps, headerRegular:'Regular Numbers', headerMeps:'MEPS Numbers',
+      total:ids.length, chunks, createdAt:at, createdBy:S.uid, lowThreshold:null, archived:false, mepsPrefix:pick.mepsPrefix, mepsSuffix:pick.mepsSuffix});
+    else tx.update(S.db.doc('categories/'+catId), {total:(c.total||0)+ids.length, chunks:[...(c.chunks||[]), ...chunks], sourceFiles:[...(c.sourceFiles||[]), source],
+      hasMeps:!!(c.hasMeps||R.meps), mepsPrefix:pick.mepsPrefix, mepsSuffix:pick.mepsSuffix});
+  });
+  return catId;
 }
 function setStatus(refs, status, action, note){
   const at=nowIso();
@@ -483,7 +648,11 @@ function parseWorkbook(wb, fileName){
 }
 function checkOverlap(parsed){
   const {pools} = derive(); const owner = new Map();
-  for (const [cid,p] of Object.entries(pools)) for (const [reg] of p.arr) owner.set(String(reg), cid);
+  for (const [cid,p] of Object.entries(pools)){
+    const c=S.cats[cid]; const upto = c && c.closed ? (c.closedNext||0) : p.arr.length;
+    for (let i=0;i<upto;i++) owner.set(String(p.arr[i][0]), cid);
+  }
+  for (const d of Object.values(S.bank)) for (const r of d.regs||[]) owner.set(String(r), 'bank');
   const hits={};
   for (const row of parsed.rows){ row.overlap = owner.get(row.reg) || null; if (row.overlap) hits[row.overlap]=(hits[row.overlap]||0)+1; }
   parsed.overlapByCat = hits;
@@ -746,7 +915,7 @@ function requestView(){
     el('p',null, S.isAdmin ? 'Add a range of Doc IDs to create the first category.' : 'An administrator needs to upload a spreadsheet of Doc IDs first.'),
     S.isAdmin ? el('button',{class:'btn primary', onclick:()=>{S.adminTab='range'; go('admin');}}, 'Add a range') : null);
   const f=S.form;
-  if (!f.catId || !S.cats[f.catId] || S.cats[f.catId].archived){ const firstOk = cats.find(([id])=>stats[id]?.remaining>0) || cats[0]; f.catId = firstOk[0]; }
+  if (!f.catId || !S.cats[f.catId] || S.cats[f.catId].archived || S.cats[f.catId].closed){ const firstOk = cats.find(([id])=>stats[id]?.remaining>0) || cats[0]; f.catId = firstOk[0]; }
   const cat=S.cats[f.catId], st=stats[f.catId];
   if (!cat.hasMeps && f.format==='meps') f.format='regular';
   const types=docTypes();
@@ -791,7 +960,7 @@ function segOpt(name, value, label, checked, disabled, on){
 }
 function poolPanel(catId, s, pool){
   const c=S.cats[catId]; const usedPct = s.total ? (s.issued/s.total*100) : 0;
-  const nextE = pool && pool.arr[s.next];
+  const nextE = pool && pool.arr[s.nextIdx ?? s.next];
   return el('section',{class:'card stack', 'aria-label':'Selected category'},
     el('div',null, el('div',{class:'pool-name'}, c.name),
       el('div',{class:'hint'}, `${plural(s.total,'Doc ID')} in this category`)),
@@ -803,7 +972,8 @@ function poolPanel(catId, s, pool){
       el('dt',null,'Next Doc ID'), el('dd',{class:'num'}, nextE ? String(nextE[0]) : '—'),
       el('dt',null,'Used'), el('dd',{class:'num'}, (s.Assigned||0).toLocaleString()),
       el('dt',null,'Waiting for Done'), el('dd',{class:'num'}, (s.Reserved||0).toLocaleString()),
-      el('dt',null,'Cancelled'), el('dd',{class:'num'}, (s.Cancelled||0).toLocaleString())),
+      el('dt',null,'Cancelled'), el('dd',{class:'num'}, (s.Cancelled||0).toLocaleString()),
+      s.returned.length ? [el('dt',null,'Released back'), el('dd',{class:'num'}, `${s.returned.length.toLocaleString()} (handed out first)`)] : null),
     (c.notes||[]).length ? el('div',null, el('h3',null,'Notes from the spreadsheet'), el('ul',{class:'notes'}, c.notes.map(n=>el('li',null,n)))) : null);
 }
 function groupsOf(records){
@@ -814,9 +984,10 @@ function pendingPanel(){
   const mine = derive().records.filter(r=>r.status==='Reserved' && r.reservedBy===S.uid);
   if (!mine.length) return null;
   return el('section',{class:'card stack'},
-    el('div',null, el('h2',{style:'margin:0'},'Waiting for you to click Done'), el('p',{class:'hint',style:'margin:4px 0 0'},'These Doc IDs are held for you. Open them to copy them again and confirm.')),
+    el('div',null, el('h2',{style:'margin:0'},'Reserved for you'), el('p',{class:'hint',style:'margin:4px 0 0'},'These Doc IDs are held for you until you click Done. Open them to copy them again and confirm.')),
     groupsOf(mine).map(list=>el('div',{class:'row'},
-      el('div',{style:'flex:1;min-width:0'}, el('b',null,list[0].mnemonic), ' ', el('span',{class:'hint'}, `${plural(list.length,'Doc ID')} · ${catName(list[0].catId)}`)),
+      el('div',{style:'flex:1;min-width:0'}, el('b',null,list[0].mnemonic), ' ', el('span',{class:'hint'}, `${plural(list.length,'Doc ID')} · ${catName(list[0].catId)}`),
+        list[0].reservedFor ? el('span',{class:'forline',style:'max-width:none'}, 'For: '+list[0].reservedFor) : null),
       el('button',{class:'btn', onclick:()=>openAssignedModal({catId:list[0].catId, cat:S.cats[list[0].catId], items:list, reopened:true})},'Open'))));
 }
 async function submitRequest(){
@@ -848,7 +1019,7 @@ function idNode(e, format, cls='id'){
   if (meps && MEPS_FONT) return el('div',{class:cls+' meps-raw', title:mepsDigits(e.meps)}, e.meps);
   return el('div',{class:cls+' num'}, meps ? mepsDigits(e.meps) : e.regular);
 }
-function openAssignedModal({catId, cat, items, reopened}){
+function openAssignedModal({catId, cat, items, reopened, left}){
   const root=document.getElementById('modal-root');
   const mn=items[0].mnemonic; const format=items[0].format;
   const isMeps = format==='meps';
@@ -856,7 +1027,12 @@ function openAssignedModal({catId, cat, items, reopened}){
   const errP = el('p',{class:'err-text', role:'alert'});
   const doneBtn = el('button',{class:'btn primary big', onclick:onDone}, 'Done');
   const cancelBtn = el('button',{class:'btn danger', onclick:onCancel}, items.length>1?'Cancel these Doc IDs':'Cancel this Doc ID');
-  const s=derive().stats[catId]; const lowNow = s && s.level!=='ok';
+  const keepBtn = el('button',{class:'btn', onclick:onKeep}, 'Keep reserved');
+  const keepBox = el('div');
+  const s0=derive().stats[catId];
+  const s = s0 ? {...s0, remaining: Number.isFinite(left) ? left : s0.remaining} : null;
+  if (s) s.level = s.remaining===0 ? 'empty' : (s.remaining<=s.threshold ? 'low' : 'ok');
+  const lowNow = s && s0.level!=='closed' && s.level!=='ok';
   const copyBtn = (raw, label) => { const b=el('button',{class:'btn', onclick:async()=>{
       const ok = await copyIds(raw, isMeps);
       if (ok){ b.classList.add('copied'); b.textContent='Copied'; setTimeout(()=>{ b.classList.remove('copied'); b.textContent=label; }, 1800); }
@@ -881,15 +1057,30 @@ function openAssignedModal({catId, cat, items, reopened}){
       items.length>1 ? el('div',{class:'row'}, copyBtn(raws, 'Copy all '+items.length)) : null,
       manual,
       lowNow ? el('div',{class:'banner '+s.level}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, s.level==='empty' ? 'That was the last of this category’s Doc IDs. Ask for a new range.' : `Only ${plural(s.remaining,'Doc ID')} left in this category. Ask for another range.`)) : null,
-      el('p',{class:'hint',style:'margin:0'}, 'After you paste them into your documents, click Done. They will be marked as used and can never be given out again.'),
-      errP),
-    el('footer',null, cancelBtn, el('span',{class:'spacer'}), doneBtn));
+      el('p',{class:'hint',style:'margin:0'}, 'After you paste them into your documents, click Done. They will be marked as used and can never be given out again. To hold them for later, click Keep reserved.'),
+      keepBox, errP),
+    el('footer',null, cancelBtn, el('span',{class:'spacer'}), keepBtn, doneBtn));
   const ov = el('div',{class:'overlay'}, dlg);
   root.replaceChildren(ov);
   document.body.style.overflow='hidden';
   setTimeout(()=>dlg.querySelector('.act button')?.focus(), 30);
-  const refs = items.map(it=>({catId, idx:it.idx}));
+  const refs = items.map(it=>({catId, idx:it.idx, key:rk(it)}));
   function close(){ root.replaceChildren(); document.body.style.overflow=''; }
+  function onKeep(){
+    if (keepBox.firstChild){ keepBox.querySelector('textarea').focus(); return; }
+    const ta=el('textarea',{id:'keep-for', placeholder:`e.g. Second script for ${mn}, needed in November`}); ta.value=items[0].reservedFor||'';
+    const save=el('button',{class:'btn primary', onclick:async()=>{
+      save.disabled=true; errP.textContent=''; const note=ta.value.trim(); const at=nowIso();
+      try { await mutateRecords(refs, e=>{ if (e.status!=='Reserved') return null; e.reservedFor=note;
+          e.history=[...(e.history||[]), {at, by:S.uid, byName:myName(), action:'Kept reserved', note: note ? `Reserved for: ${note}` : ''}]; return e; });
+        close(); toast(`${plural(items.length,'Doc ID')} kept reserved for ${mn}.`); }
+      catch(x){ errP.textContent='Couldn’t save. Try again.'; save.disabled=false; } }}, 'Save and close');
+    keepBox.replaceChildren(el('div',{class:'card stack',style:'padding:14px;gap:10px'},
+      el('div',{class:'field'}, el('label',{for:'keep-for'},'What are you reserving them for?'), ta,
+        el('span',{class:'hint'},`They stay reserved for project ${mn} until someone clicks Done, cancels them, or an administrator releases them back to the range.`)),
+      el('div',{class:'row'}, el('span',{class:'spacer'}), save)));
+    ta.focus();
+  }
   async function onDone(){
     doneBtn.disabled=cancelBtn.disabled=true; doneBtn.replaceChildren(el('span',{class:'spin'}),'Saving…'); errP.textContent='';
     try { await setStatus(refs,'Assigned','Marked as used',`Confirmed by requester`); close(); toast(`${plural(items.length,'Doc ID')} marked as used for ${mn}.`); }
@@ -914,7 +1105,7 @@ function filteredRecords(){
     if (F.status && r.status!==F.status) return false;
     if (from && r.reservedAt<from) return false;
     if (to && r.reservedAt>to) return false;
-    if (q){ const hay=(r.regular+' '+mepsDigits(r.meps)+' '+r.mnemonic+' '+r.docType+' '+catName(r.catId)).toLowerCase(); if (!hay.includes(q)) return false; }
+    if (q){ const hay=(r.regular+' '+mepsDigits(r.meps)+' '+r.mnemonic+' '+r.docType+' '+catName(r.catId)+' '+(r.reservedFor||'')).toLowerCase(); if (!hay.includes(q)) return false; }
     return true;
   });
 }
@@ -923,8 +1114,12 @@ function lookupUnassigned(q){
   const {pools,stats}=derive();
   for (const [cid,p] of Object.entries(pools)){
     const i = p.arr.findIndex(([reg])=>String(reg)===q);
-    if (i>=0) return {catId:cid, idx:i, free: i>=stats[cid].next};
+    if (i<0) continue;
+    const c=S.cats[cid]; if (c && c.closed && i>=(c.closedNext||0)) continue;   // released to the bank
+    return {catId:cid, idx:i, free: i>=stats[cid].next || stats[cid].returned.includes(i)};
   }
+  const b = bankEntries().find(e=>e.reg===q);
+  if (b) return {bank:true, reg:q, from:S.bank[b.dep]?.sourceName||''};
   return {none:true};
 }
 function recordsView(){
@@ -934,7 +1129,7 @@ function recordsView(){
   const setF=(k,v)=>{ F[k]=v; S.showLimit=200; render(); };
   let qT=0;
   const lookup = F.q && !list.length ? lookupUnassigned(F.q) : null;
-  const keyOf = r => r.catId+':'+r.idx;
+  const keyOf = r => r.catId+':'+rk(r);
   const allRecs = derive().records;
   for (const k of [...S.sel]) if (!allRecs.some(r=>keyOf(r)===k)) S.sel.delete(k);   // drop anything that no longer exists
   const selCount = S.sel.size;
@@ -978,12 +1173,13 @@ function recordsView(){
 }
 function lookupNode(l){
   if (l.none) return el('div',{class:'card'}, el('p',{style:'margin:0'}, `${S.filters.q.trim()} isn’t in any Doc ID category.`));
+  if (l.bank) return el('div',{class:'card'}, el('p',{style:'margin:0'}, el('b',{class:'num'}, l.reg), ` is in the Doc ID Bank${l.from?` (from ${l.from})`:''}. It has never been handed out and can be added to a category.`));
   const {pools}=derive(); const e=pools[l.catId].arr[l.idx];
   return el('div',{class:'card'}, el('p',{style:'margin:0'}, el('b',{class:'num'}, String(e[0])), ` is in ${catName(l.catId)} and `,
     l.free ? 'hasn’t been handed out yet.' : 'was issued but has no record. Ask an administrator to check it.'));
 }
 function recordRows(r){
-  const key=r.catId+':'+r.idx; const open=S.expanded.has(key);
+  const key=r.catId+':'+rk(r); const open=S.expanded.has(key);
   const toggle=()=>{ open?S.expanded.delete(key):S.expanded.add(key); render(); };
   const picked=S.sel.has(key);
   const rows=[el('tr',{class:'clickable'+(picked?' selected':''), tabindex:0, 'aria-expanded':String(open), onclick:toggle, onkeydown:e=>{ if(e.target===e.currentTarget && (e.key==='Enter'||e.key===' ')){e.preventDefault();toggle();} }},
@@ -991,13 +1187,14 @@ function recordRows(r){
       onchange:e=>{ e.target.checked ? S.sel.add(key) : S.sel.delete(key); render(); }})),
     el('td',{class:'id num'}, r.regular, r.meps ? el('span',{class:'sub'}, 'MEPS '+mepsDigits(r.meps)) : null),
     el('td',null, r.mnemonic), el('td',null, catName(r.catId)), el('td',null, r.docType),
-    el('td',null, el('span',{class:'chip '+r.status}, r.status)),
+    el('td',null, el('span',{class:'chip '+r.status}, r.status), r.status==='Reserved' && r.reservedFor ? el('span',{class:'forline'}, 'For: '+r.reservedFor) : null),
     el('td',{style:'white-space:nowrap'}, fmtDate(r.reservedAt)), el('td',null, nameOf(r.reservedBy)))];
   if (open) rows.push(el('tr',{class:'detail'}, el('td',{colspan:8}, el('div',{class:'stack',style:'gap:10px'},
     el('div',{class:'row small'}, el('span',null, `Shown to requester as ${r.format==='meps'?'MEPS':'regular'} number.`),
       r.confirmedAt ? el('span',{class:'muted'}, `Done clicked ${fmtDate(r.confirmedAt)} by ${nameOf(r.confirmedBy)}.`) : null,
       el('span',{class:'spacer'}),
-      S.isAdmin ? el('button',{class:'btn', onclick:e=>{e.stopPropagation(); openEditModal(r);}},'Correct or cancel') : null),
+      r.status==='Released' ? el('span',{class:'muted'}, `Released ${fmtDate(r.releasedAt)} by ${r.releasedByName||nameOf(r.releasedBy)}. This record is kept for the history; the Doc ID can be handed out again.`) : null,
+      S.isAdmin && r.status!=='Released' ? el('button',{class:'btn', onclick:e=>{e.stopPropagation(); openEditModal(r);}}, r.status==='Reserved' ? 'Correct, release or cancel' : 'Correct or cancel') : null),
     el('ul',{class:'hist'}, (r.history||[]).map(h=>el('li',null, el('span',{class:'muted num'}, fmtDate(h.at)), el('span',null, el('b',null,h.action), h.note?` — ${h.note}`:'', ` (${nameOf(h.by)})`))))))));
   return rows;
 }
@@ -1005,9 +1202,9 @@ async function exportRecords(list, kind){
   if (!list.length){ toast('Nothing to export.'); return; }
   if (kind==='xlsx' && !window.XLSX){ toast('The Excel exporter didn’t load. Use Export CSV, or reload the page.'); return; }
   const who = await namesFor(list.flatMap(r=>[r.reservedBy, r.confirmedBy, r.cancelledBy]));
-  const header=['Doc ID (Regular)','Doc ID (MEPS characters)','MEPS number (digits)','Shown as','Project mnemonic','Category','Document type','Status','Assigned at','Assigned by','Done at','Done by','Cancelled at','Cancelled by','Last change'];
+  const header=['Doc ID (Regular)','Doc ID (MEPS characters)','MEPS number (digits)','Shown as','Project mnemonic','Category','Document type','Status','Reserved for','Assigned at','Assigned by','Done at','Done by','Cancelled at','Cancelled by','Last change'];
   const rows=list.map(r=>{ const last=(r.history||[]).slice(-1)[0]||{};
-    return [r.regular, r.meps||'', r.meps?mepsDigits(r.meps):'', r.format==='meps'?'MEPS':'Regular', r.mnemonic, catName(r.catId), r.docType, r.status,
+    return [r.regular, r.meps||'', r.meps?mepsDigits(r.meps):'', r.format==='meps'?'MEPS':'Regular', r.mnemonic, catName(r.catId), r.docType, r.status, r.reservedFor||'',
       fmtDate(r.reservedAt), who(r.reservedBy), fmtDate(r.confirmedAt), r.confirmedBy?who(r.confirmedBy):'', fmtDate(r.cancelledAt), r.cancelledBy?who(r.cancelledBy):'',
       last.action ? `${last.action}${last.note?': '+last.note:''}` : '']; });
   const stamp=new Date().toISOString().slice(0,10);
@@ -1015,7 +1212,7 @@ async function exportRecords(list, kind){
     const csv='\uFEFF'+[header,...rows].map(row=>row.map(v=>{ const s=String(v??''); return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }).join(',')).join('\r\n');
     return save(`doc-id-records-${stamp}.csv`, csv);
   }
-  const ws=XLSX.utils.aoa_to_sheet([header,...rows]); ws['!cols']=header.map((h,i)=>({wch:[14,16,14,9,16,26,18,11,20,18,20,18,20,18,40][i]}));
+  const ws=XLSX.utils.aoa_to_sheet([header,...rows]); ws['!cols']=header.map((h,i)=>({wch:[14,16,14,9,16,26,18,11,30,20,18,20,18,20,18,40][i]}));
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Doc ID records');
   const note=XLSX.utils.aoa_to_sheet([['About this export'],['The "Doc ID (MEPS characters)" column holds the original MEPS characters. Set that column to the MEPS Bookman Universal font to see them as they appear in your documents.'],[`Exported ${fmtDate(nowIso())}`]]);
   XLSX.utils.book_append_sheet(wb, note, 'Notes');
@@ -1033,7 +1230,9 @@ function openEditModal(r){
   const root=document.getElementById('modal-root');
   const types=[...new Set([...docTypes(true).map(t=>t.name), r.docType])];
   const mn=el('input',{id:'e-mn',type:'text',value:r.mnemonic}); const ty=el('select',{id:'e-ty',value:r.docType}, types.map(t=>opt(t,t,t===r.docType)));
-  const stS=el('select',{id:'e-st',value:r.status}, STATUSES.map(s=>opt(s,`${s} — ${STATUS_HELP[s]}`,s===r.status)));
+  const stS=el('select',{id:'e-st',value:r.status}, EDIT_STATUSES.map(s=>opt(s,`${s} — ${STATUS_HELP[s]}`,s===r.status)));
+  const forT=el('textarea',{id:'e-for', placeholder:'e.g. Second script, needed in November'}); forT.value=r.reservedFor||'';
+  const relB = r.status==='Reserved' ? el('button',{class:'btn danger', onclick:doRelease}, 'Release back to the range') : null;
   const why=el('textarea',{id:'e-why', placeholder:'e.g. Wrong mnemonic typed; should be JWB-SPR'}); const err=el('p',{class:'err-text',role:'alert'});
   const saveB=el('button',{class:'btn primary',onclick:doSave},'Save correction');
   const dlg=el('div',{class:'dialog',role:'dialog','aria-modal':'true','aria-labelledby':'e-t'},
@@ -1042,33 +1241,46 @@ function openEditModal(r){
       el('div',{class:'field'}, el('label',{for:'e-mn'},'Project mnemonic'), mn),
       el('div',{class:'field'}, el('label',{for:'e-ty'},'Document type'), ty),
       el('div',{class:'field'}, el('label',{for:'e-st'},'Status'), stS),
-      el('div',{class:'field'}, el('label',{for:'e-why'},'Reason for the change'), why), err),
-    el('footer',null, el('button',{class:'btn',onclick:close},'Close without saving'), saveB));
+      el('div',{class:'field'}, el('label',{for:'e-for'},'Reserved for (optional)'), forT),
+      el('div',{class:'field'}, el('label',{for:'e-why'},'Reason for the change'), why),
+      relB ? el('p',{class:'hint',style:'margin:0'}, 'Release back to the range: if this Doc ID was never pasted into any document, it goes back to its category and is handed out to the next request. Its record stays in the history as Released.') : null,
+      err),
+    el('footer',null, relB, el('span',{class:'spacer'}), el('button',{class:'btn',onclick:close},'Close without saving'), saveB));
   root.replaceChildren(el('div',{class:'overlay', onclick:e=>{ if(e.target===e.currentTarget) close(); }}, dlg));
   document.body.style.overflow='hidden'; setTimeout(()=>mn.focus(),30);
   function close(){ root.replaceChildren(); document.body.style.overflow=''; }
   async function doSave(){
-    const nm=mn.value.trim(), nt=ty.value, ns=stS.value, reason=why.value.trim();
+    const nm=mn.value.trim(), nt=ty.value, ns=stS.value, reason=why.value.trim(), nf=forT.value.trim();
     if (!nm){ err.textContent='The project mnemonic can’t be empty.'; return; }
     if (!reason){ err.textContent='Add a reason so the audit trail shows why this changed.'; why.focus(); return; }
-    const changes=[]; if (nm!==r.mnemonic) changes.push(`project ${r.mnemonic} → ${nm}`); if (nt!==r.docType) changes.push(`type ${r.docType} → ${nt}`); if (ns!==r.status) changes.push(`status ${r.status} → ${ns}`);
+    const changes=[]; if (nm!==r.mnemonic) changes.push(`project ${r.mnemonic} → ${nm}`); if (nt!==r.docType) changes.push(`type ${r.docType} → ${nt}`); if (ns!==r.status) changes.push(`status ${r.status} → ${ns}`); if (nf!==(r.reservedFor||'')) changes.push(nf ? `reserved for: ${nf}` : 'reserved-for note removed');
     if (!changes.length){ err.textContent='Nothing has changed.'; return; }
     saveB.disabled=true; const at=nowIso();
     try {
-      await mutateRecords([{catId:r.catId, idx:r.idx}], e=>{
-        e.mnemonic=nm; e.docType=nt;
+      await mutateRecords([{catId:r.catId, idx:r.idx, key:rk(r)}], e=>{
+        e.mnemonic=nm; e.docType=nt; e.reservedFor=nf;
         if (ns!==e.status){ e.status=ns; if (ns==='Assigned'){e.confirmedAt=at;e.confirmedBy=S.uid;e.confirmedByName=myName();} if (ns==='Cancelled'){e.cancelledAt=at;e.cancelledBy=S.uid;e.cancelledByName=myName();} }
         e.history=[...(e.history||[]), {at, by:S.uid, byName:myName(), action:'Corrected by administrator', note:`${changes.join('; ')}. Reason: ${reason}`}];
         return e; });
       close(); toast('Correction saved.');
     } catch(e){ err.textContent='The correction couldn’t be saved. Try again.'; saveB.disabled=false; }
   }
+  async function doRelease(){
+    const reason=why.value.trim();
+    if (!reason){ err.textContent='Add a reason for releasing it, so the audit trail shows why.'; why.focus(); return; }
+    const closed=S.cats[r.catId]?.closed;
+    if (!confirm(`Release Doc ID ${r.regular}? Only do this if it was never pasted into any document. ${closed ? 'Its category is closed, so it will go to the Doc ID Bank.' : `It will be given to the next person who requests a Doc ID from ${catName(r.catId)}.`}`)) return;
+    relB.disabled=saveB.disabled=true;
+    try { const n=await releaseRecords([{catId:r.catId, idx:r.idx, key:rk(r)}], reason); close();
+      toast(n ? (closed ? `Doc ID ${r.regular} moved to the Doc ID Bank.` : `Doc ID ${r.regular} is back in ${catName(r.catId)}.`) : 'It was no longer reserved, so nothing changed.'); }
+    catch(x){ err.textContent = x instanceof AppError ? x.message : 'It couldn’t be released. Try again.'; relB.disabled=saveB.disabled=false; }
+  }
 }
 
 /* ----- Admin view ----- */
 function adminView(){
-  const tabs=[['categories','Categories'],['range','Add a range'],['upload','Upload spreadsheets'],['pending','Waiting for Done'],['reports','Utilization'],['types','Document types'],['people','People']];
-  const body = {categories:adminCategories, range:adminRange, upload:adminUpload, pending:adminPending, reports:adminReports, types:adminTypes, people:adminPeople}[S.adminTab]();
+  const tabs=[['categories','Categories'],['range','Add a range'],['bank','Doc ID Bank'],['upload','Upload spreadsheets'],['pending','Reserved'],['reports','Utilization'],['types','Document types'],['people','People']];
+  const body = {categories:adminCategories, range:adminRange, bank:adminBank, upload:adminUpload, pending:adminPending, reports:adminReports, types:adminTypes, people:adminPeople}[S.adminTab]();
   return el('div',null, el('h1',null,'Administration'), el('p',{class:'lede'},'Create categories from a range of Doc IDs, add new ranges, and review how Doc IDs are being used.'),
     el('div',{class:'subtabs', role:'tablist'}, tabs.map(([k,l])=>el('button',{class:'subtab', role:'tab', 'aria-current':S.adminTab===k?'page':null, onclick:()=>{S.adminTab=k; render();}}, l))),
     body);
@@ -1081,23 +1293,28 @@ function adminCategories(){
     const thrId='thr-'+id;
     return el('section',{class:'card cat'},
       el('div',{class:'cat-head'},
-        el('div',{style:'flex:1;min-width:220px'}, el('div',{class:'pool-name'}, c.name, ' ', c.archived?el('span',{class:'chip'},'Retired'):el('span',{class:'chip '+s.level}, s.level==='ok'?'Healthy':s.level==='low'?'Running low':'Empty')),
+        el('div',{style:'flex:1;min-width:220px'}, el('div',{class:'pool-name'}, c.name, ' ', el('span',{class:'chip '+levelClass(c,s)}, levelLabel(c,s))),
           el('div',{class:'hint'}, (c.sourceFiles||[]).map(f=>f.name).join(', '))),
         el('div',{class:'stats'},
-          stat(s.remaining,'left'), stat(s.Assigned||0,'used'), stat(s.Reserved||0,'waiting'), stat(s.Cancelled||0,'cancelled'), stat(s.total,'total'))),
+          c.closed ? stat(s.released,'moved to bank') : stat(s.remaining,'left'), stat(s.Assigned||0,'used'), stat(s.Reserved||0,'waiting'), stat(s.Cancelled||0,'cancelled'), stat(c.closed?s.issued:s.total, c.closed?'handed out':'total'))),
       el('div',{class:'gauge '+s.level}, el('i',{class:'used',style:`width:${usedPct}%`}), el('i',{class:'left',style:`width:${100-usedPct}%`})),
       el('div',{class:'row'},
         el('button',{class:'btn', 'aria-expanded':String(open), onclick:()=>{open?S.openCats.delete(id):S.openCats.add(id); render();}}, open?'Hide details':'Details and settings'),
         el('button',{class:'btn ghost', onclick:()=>{S.filters={q:'',catId:id,docType:'',status:'',from:'',to:''}; go('records');}},'View assigned Doc IDs'),
-        el('button',{class:'btn ghost', onclick:()=>{S.range={...S.range, target:id, msg:'', done:''}; S.adminTab='range'; render();}},'Add a new range')),
+        c.closed ? null : el('button',{class:'btn ghost', onclick:()=>{S.range={...S.range, target:id, source:'range', msg:'', done:''}; S.adminTab='range'; render();}},'Add a new range')),
       open ? el('div',{class:'stack',style:'gap:14px;border-top:1px solid var(--line);padding-top:14px'},
         el('dl',{class:'kv'},
-          el('dt',null,'Next Doc ID'), el('dd',{class:'num'}, p.arr[s.next] ? String(p.arr[s.next][0]) : 'None left'),
+          c.closed ? [el('dt',null,'Closed'), el('dd',null, `${fmtDate(c.closedAt)} by ${c.closedByName||nameOf(c.closedBy)}. ${plural(c.released||0,'unused Doc ID')} moved to the Doc ID Bank.`)]
+            : [el('dt',null,'Next Doc ID'), el('dd',{class:'num'}, p.arr[s.nextIdx] ? String(p.arr[s.nextIdx][0]) : 'None left'),
+               s.returned.length ? [el('dt',null,'Released back'), el('dd',null, `${plural(s.returned.length,'Doc ID')}, handed out before new ones: ${s.returned.map(i=>p.arr[i]?.[0]).filter(Boolean).join(', ')}`)] : null],
           el('dt',null,'Last Doc ID'), el('dd',{class:'num'}, p.arr.length ? String(p.arr[p.arr.length-1][0]) : '—'),
           el('dt',null,'Formats'), el('dd',null, c.hasMeps ? 'Regular and MEPS' : 'Regular only'),
           (c.mepsPrefix||c.mepsSuffix) ? [el('dt',null,'MEPS prefix / suffix'), el('dd',null, `${c.mepsPrefix||'(none)'} / ${c.mepsSuffix||'(none)'}`)] : null,
           el('dt',null,'Ranges loaded'), el('dd',null, (c.sourceFiles||[]).map(f=>el('div',null, `${f.name}: ${f.first}–${f.last} (${f.count.toLocaleString()}), ${fmtDate(f.importedAt)}`)))),
         (c.notes||[]).length ? el('div',null, el('h3',null,'Notes from the spreadsheet'), el('ul',{class:'notes'}, c.notes.map(n=>el('li',null,n)))) : null,
+        c.closed ? el('div',{class:'row'}, el('span',{class:'spacer'}),
+          el('button',{class:'btn', onclick:async()=>{ const n=prompt('Category name', c.name); if(!n||!n.trim()||n.trim()===c.name) return;
+            try{ await S.db.doc('categories/'+id).update({name:n.trim()}); }catch(e){ toast('Couldn’t rename the category.'); } }},'Rename')) :
         el('div',{class:'row',style:'align-items:flex-end'},
           el('div',{class:'field',style:'max-width:260px'}, el('label',{for:thrId},'Warn when this many are left'),
             el('input',{id:thrId, type:'number', min:0, value:s.threshold})),
@@ -1108,37 +1325,103 @@ function adminCategories(){
             try{ await S.db.doc('categories/'+id).update({name:n.trim()}); }catch(e){ toast('Couldn’t rename the category.'); } }},'Rename'),
           el('button',{class:'btn '+(c.archived?'':'danger'), onclick:async()=>{
             if (!c.archived && !confirm(`Retire ${c.name}? Secretaries won’t be able to request Doc IDs from it. Its records stay, and you can bring it back later.`)) return;
-            try{ await S.db.doc('categories/'+id).update({archived:!c.archived}); }catch(e){ toast('Couldn’t change the category.'); } }}, c.archived?'Bring back':'Retire')),
-        el('div',null, el('h3',null, `Remaining Doc IDs (${s.remaining.toLocaleString()})`),
-          s.remaining ? el('div',{class:'idlist num'}, p.arr.slice(s.next, S.showAllIds.has(id)?undefined:s.next+200).map(([reg])=>el('span',null,String(reg)))) : el('p',{class:'hint'},'None left.'),
+            try{ await S.db.doc('categories/'+id).update({archived:!c.archived}); }catch(e){ toast('Couldn’t change the category.'); } }}, c.archived?'Bring back':'Retire'),
+          el('button',{class:'btn danger', onclick:()=>openCloseModal(id)}, 'Close category')),
+        c.closed ? null : el('div',null, el('h3',null, `Remaining Doc IDs (${s.remaining.toLocaleString()})`),
+          s.remaining ? el('div',{class:'idlist num'}, [...s.returned.map(i=>p.arr[i]), ...p.arr.slice(s.next, S.showAllIds.has(id)?undefined:s.next+200)].filter(Boolean).map(([reg])=>el('span',null,String(reg)))) : el('p',{class:'hint'},'None left.'),
           s.remaining>200 && !S.showAllIds.has(id) ? el('button',{class:'btn ghost',style:'margin-top:6px',onclick:()=>{S.showAllIds.add(id);render();}}, `Show all ${s.remaining.toLocaleString()}`) : null)) : null);
   }));
+}
+function openCloseModal(id){
+  const c=S.cats[id], s=derive().stats[id]; const root=document.getElementById('modal-root');
+  const ok=el('input',{type:'checkbox', id:'cl-ok'}); const err=el('p',{class:'err-text', role:'alert'});
+  const go2=el('button',{class:'btn primary', disabled:true, onclick:doClose}, 'Close category');
+  ok.addEventListener('change',()=>{ go2.disabled=!ok.checked; });
+  const dlg=el('div',{class:'dialog', role:'dialog', 'aria-modal':'true', 'aria-labelledby':'cl-t'},
+    el('header',null, el('h2',{id:'cl-t'}, `Close ${c.name}?`), el('p',{class:'hint',style:'margin:0'},'Do this when the project is over.')),
+    el('div',{class:'body'},
+      el('ul',{class:'notes',style:'display:grid;gap:8px'},
+        el('li',null, el('b',null, plural(s.remaining,'Doc ID')), ' that were never handed out will move to the ', el('b',null,'Doc ID Bank'), ', where you can add them to another category later.'),
+        el('li',null, el('b',null, plural(s.issued,'Doc ID')), ' already handed out stay with this category, with all their records. They are never reused, including cancelled ones.'),
+        el('li',null, 'Secretaries won’t be able to request Doc IDs from this category any more.')),
+      s.Reserved ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${plural(s.Reserved,'Doc ID')} still waiting for Done. ${s.Reserved===1?'It stays':'They stay'} with this category; you can still confirm or cancel ${s.Reserved===1?'it':'them'} under Waiting for Done.`)) : null,
+      el('label',{class:'row',style:'gap:8px;cursor:pointer;align-items:flex-start'}, ok, el('span',null,'I understand that closing a category can’t be undone.')),
+      err),
+    el('footer',null, el('button',{class:'btn', onclick:close}, 'Keep it open'), go2));
+  root.replaceChildren(el('div',{class:'overlay', onclick:e=>{ if(e.target===e.currentTarget) close(); }}, dlg));
+  document.body.style.overflow='hidden';
+  function close(){ root.replaceChildren(); document.body.style.overflow=''; }
+  async function doClose(){
+    go2.disabled=true; go2.replaceChildren(el('span',{class:'spin'}),'Closing…'); err.textContent='';
+    try { const r=await closeCategory(id); close(); toast(`${c.name} closed. ${plural(r.released,'Doc ID')} moved to the Doc ID Bank.`, 5000); }
+    catch(x){ err.textContent = x instanceof AppError ? x.message : 'The category couldn’t be closed. Nothing was changed. Try again.'; go2.disabled=!ok.checked; go2.textContent='Close category'; }
+  }
+}
+function adminBank(){
+  const deps=bankGroups();
+  const total=deps.reduce((a,g)=>a+g.regs.length,0);
+  const use=(dep)=>{ S.range={...S.range, source:'bank', bankDep:dep, bankQty:'', target:'new', msg:'', done:''}; S.adminTab='range'; render(); };
+  if (!total) return el('div',{class:'card empty-state'}, el('h2',null,'The Doc ID Bank is empty'),
+    el('p',{style:'max-width:60ch;margin:0 auto'},'When a project is over, close its category under Categories. Every Doc ID it never handed out is kept here, so you can add it to another category instead of wasting it.'));
+  return el('div',{class:'stack'},
+    el('div',{class:'card'}, el('div',{class:'row'},
+      el('div',null, el('div',{class:'pool-count num'}, total.toLocaleString(), el('small',null,'Doc IDs in the bank')),
+        el('p',{class:'hint',style:'margin:6px 0 0'},'These were never handed out. Add them to a new or existing category whenever you need them.')),
+      el('span',{class:'spacer'}),
+      el('button',{class:'btn primary', onclick:()=>use('any')}, 'Use Doc IDs from the bank'))),
+    el('h2',{style:'margin:6px 0 0'},'Where they came from'),
+    deps.map(d=>{ const id=d.key; const regs=d.regs; const open=S.showAllIds.has('bank:'+id);
+      return el('section',{class:'card stack',style:'gap:10px'},
+        el('div',{class:'row'},
+          el('div',{style:'flex:1;min-width:220px'}, el('div',{class:'pool-name'}, d.sourceName||'Unknown category'),
+            el('div',{class:'hint'}, `Deposited ${fmtDate(d.releasedAt)} by ${d.releasedByName||nameOf(d.releasedBy)}`)),
+          el('div',{class:'stats'}, stat(regs.length,'Doc IDs'), el('div',{class:'stat'}, el('b',{class:'num',style:'font-size:16px'}, `${regs[0]} – ${regs[regs.length-1]}`), el('span',null,'lowest – highest')))),
+        el('div',{class:'row'},
+          el('button',{class:'btn', onclick:()=>use(id)}, 'Use these Doc IDs'),
+          el('button',{class:'btn ghost', 'aria-expanded':String(open), onclick:()=>{ open?S.showAllIds.delete('bank:'+id):S.showAllIds.add('bank:'+id); render(); }}, open?'Hide the list':'Show the list')),
+        open ? el('div',{class:'idlist num'}, regs.map(r=>el('span',null,r))) : null); }));
 }
 function stat(n,l){ return el('div',{class:'stat'}, el('b',{class:'num'}, Number(n).toLocaleString()), el('span',null,l)); }
 
 function adminRange(){
-  const R=S.range; const b=buildRange(R);
-  if (R.target!=='new' && !S.cats[R.target]) R.target='new';
+  const R=S.range;
+  if (R.target!=='new' && (!S.cats[R.target] || S.cats[R.target].closed)) R.target='new';
+  const bankTotal = bankEntries().length;
+  if (R.source==='bank' && !bankTotal) R.source='range';
+  if (R.bankDep!=='any' && !bankGroups().some(g=>g.key===R.bankDep)) R.bankDep='any';
+  const fromBank = R.source==='bank';
+  const b = fromBank ? (()=>{ const k=buildBankPick(R); return k.error ? {error:k.error} : {parsed:{rows:k.rows, overlapByCat:{}}, pick:k}; })() : buildRange(R);
   let t=0; const upd=(k)=>e=>{ R[k]= e.target.type==='checkbox' ? e.target.checked : e.target.value; R.msg=''; R.done=''; clearTimeout(t); t=setTimeout(render, e.target.type==='checkbox'?0:250); };
   const p=b.parsed; const fresh=p ? p.rows.filter(r=>!r.overlap) : [];
   const overl=p ? Object.entries(p.overlapByCat||{}) : [];
   const tgtCat=R.target!=='new' ? S.cats[R.target] : null;
   return el('div',{class:'stack'},
-    el('p',{class:'hint',style:'margin:0;max-width:70ch'},'Enter the first and last Doc ID. Every number in between becomes an available Doc ID, in regular and MEPS format, in order.'),
+    el('p',{class:'hint',style:'margin:0;max-width:70ch'}, fromBank ? 'Take Doc IDs from the Doc ID Bank, lowest number first, and add them to a category.' : 'Enter the first and last Doc ID. Every number in between becomes an available Doc ID, in regular and MEPS format, in order.'),
+    bankTotal ? el('div',{class:'seg', role:'radiogroup', 'aria-label':'Where the Doc IDs come from'},
+      segOpt('src','range','A new range of Doc IDs', !fromBank, false, ()=>{R.source='range'; R.msg=''; R.done=''; render();}),
+      segOpt('src','bank',`The Doc ID Bank (${bankTotal.toLocaleString()})`, fromBank, false, ()=>{R.source='bank'; R.msg=''; R.done=''; render();})) : null,
     el('div',{class:'req-grid'},
       el('div',{class:'card stack'},
         el('div',{class:'field'}, el('label',{for:'rg-t'},'Add these Doc IDs to'),
           el('select',{id:'rg-t', value:R.target, onchange:e=>{R.target=e.target.value; R.msg=''; R.done='';
             const c=S.cats[R.target]; if (c){ R.prefix=c.mepsPrefix||''; R.suffix=c.mepsSuffix||''; R.affix=!!(R.prefix||R.suffix); } render();}},
-            opt('new','A new category'), allCats().map(([id,c])=>opt(id,`Existing category: ${c.name}`)))),
+            opt('new','A new category'), openCats().map(([id,c])=>opt(id,`Existing category: ${c.name}`)))),
         R.target==='new' ? el('div',{class:'field'}, el('label',{for:'rg-n'},'Category name'),
           el('input',{id:'rg-n', type:'text', value:R.name, placeholder:'e.g. 2028 JWB Document IDs', oninput:upd('name')})) : null,
-        el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:10px'},
+        fromBank ? [
+          el('div',{class:'field'}, el('label',{for:'rg-dep'},'Take from'),
+            el('select',{id:'rg-dep', value:R.bankDep, onchange:e=>{R.bankDep=e.target.value; R.msg=''; R.done=''; render();}},
+              opt('any',`Anywhere in the bank (${bankTotal.toLocaleString()})`),
+              bankGroups().map(g=>opt(g.key, `From ${g.sourceName||'unknown'} (${g.regs.length.toLocaleString()}, deposited ${new Date(g.releasedAt).toLocaleDateString()})`)))),
+          el('div',{class:'field',style:'max-width:260px'}, el('label',{for:'rg-q'},'How many Doc IDs'),
+            el('input',{id:'rg-q', type:'number', min:1, inputmode:'numeric', value:R.bankQty, placeholder:'All', oninput:upd('bankQty')}),
+            el('span',{class:'hint'},'Leave empty to take all of them.'))] : null,
+        fromBank ? null : el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:10px'},
           el('div',{class:'field'}, el('label',{for:'rg-a'},'First Doc ID'), el('input',{id:'rg-a', type:'text', inputmode:'numeric', autocomplete:'off', value:R.first, placeholder:'902026254', oninput:upd('first')})),
           el('div',{class:'field'}, el('label',{for:'rg-b'},'Last Doc ID'), el('input',{id:'rg-b', type:'text', inputmode:'numeric', autocomplete:'off', value:R.last, placeholder:'902026899', oninput:upd('last')}))),
-        el('label',{class:'row',style:'gap:8px;align-items:flex-start;cursor:pointer'}, el('input',{id:'rg-top', type:'checkbox', checked:R.skipTop, onchange:upd('skipTop'), style:'margin-top:4px'}),
+        fromBank ? null : el('label',{class:'row',style:'gap:8px;align-items:flex-start;cursor:pointer'}, el('input',{id:'rg-top', type:'checkbox', checked:R.skipTop, onchange:upd('skipTop'), style:'margin-top:4px'}),
           el('span',null, 'Leave out numbers ending in 900–999', el('span',{class:'hint',style:'display:block'},'For ranges that cross a block kept for vernacular only.'))),
-        el('div',{class:'field'}, el('label',{for:'rg-x'},'Also leave out (optional)'),
+        fromBank ? null : el('div',{class:'field'}, el('label',{for:'rg-x'},'Also leave out (optional)'),
           el('input',{id:'rg-x', type:'text', value:R.exclude, placeholder:'e.g. 902026300-902026309, 902026450', oninput:upd('exclude')}),
           el('span',{class:'hint'},'Single Doc IDs or ranges, separated by commas.')),
         el('label',{class:'row',style:'gap:8px;cursor:pointer'}, el('input',{id:'rg-m', type:'checkbox', checked:R.meps, onchange:upd('meps')}), 'Provide MEPS numbers too'),
@@ -1159,12 +1442,14 @@ function adminRange(){
            el('dt',null,'First'), el('dd',{class:'num'}, fresh[0]?.reg || '—'),
            el('dt',null,'Last'), el('dd',{class:'num'}, fresh[fresh.length-1]?.reg || '—'),
            el('dt',null,'Formats'), el('dd',null, R.meps?'Regular and MEPS':'Regular only'),
+           fromBank ? [el('dt',null,'Source'), el('dd',null,'Doc ID Bank'), el('dt',null,'Left in the bank'), el('dd',{class:'num'}, (bankTotal-fresh.length).toLocaleString())] : null,
            b.skipped ? [el('dt',null,'Left out'), el('dd',{class:'num'}, b.skipped.toLocaleString())] : null,
            tgtCat ? [el('dt',null,'After adding'), el('dd',{class:'num'}, `${(derive().stats[R.target].remaining+fresh.length).toLocaleString()} left in this category`)] : null),
          R.meps && fresh[0] ? el('div',{class:'field'}, el('span',{class:'legend'},'First MEPS number'),
            el('div',{class:'num',style:'font-size:20px;font-weight:600'}, mepsDigits(fresh[0].meps)),
            el('span',{class:'hint'}, R.affix && (R.prefix||R.suffix) ? 'Digits, including any in the prefix or suffix, are created in MEPS Bookman Universal characters. Letters and symbols are kept exactly as typed.' : 'Created in MEPS Bookman Universal characters, the same as in your spreadsheets.')) : null,
-         overl.length ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${overl.map(([cid,n])=>`${n.toLocaleString()} already in ${catName(cid)}`).join(', ')}. Those Doc IDs will be skipped so nothing can be handed out twice.`)) : null],
+         overl.length ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${overl.map(([cid,n])=>`${n.toLocaleString()} already in ${catName(cid)}`).join(', ')}. Those Doc IDs will be skipped so nothing can be handed out twice.`,
+           p.overlapByCat && p.overlapByCat.bank ? ' To use the ones in the Doc ID Bank, choose “The Doc ID Bank” at the top.' : '')) : null],
         R.msg ? el('p',{class:'err-text', role:'alert'}, R.msg) : null,
         R.done ? el('div',{class:'banner info'}, el('span',{class:'ico'}, el('i',null,'✓')), el('p',null,R.done)) : null,
         el('div',null, el('button',{class:'btn primary big', disabled: R.busy || !p || !fresh.length || (R.target==='new' && !R.name.trim()), onclick:addRange},
@@ -1172,14 +1457,16 @@ function adminRange(){
         p && R.target==='new' && !R.name.trim() ? el('p',{class:'hint',style:'margin:0'},'Give the category a name to continue.') : null)));
 }
 async function addRange(){
-  const R=S.range; const b=buildRange(R); if (!b.parsed) return;
+  const R=S.range; const fromBank=R.source==='bank';
+  const pick = fromBank ? buildBankPick(R) : null; const b = fromBank ? null : buildRange(R);
+  if (fromBank ? pick.error : !b.parsed) return;
   R.busy=true; R.msg=''; render();
-  const n=b.parsed.rows.filter(r=>!r.overlap).length;
+  const n = fromBank ? pick.rows.length : b.parsed.rows.filter(r=>!r.overlap).length;
   try {
-    const cid = await runImport({parsed:b.parsed, name:R.name, target:R.target, fileName:`Range ${b.first}–${b.last}`});
+    const cid = fromBank ? await withdrawFromBank(R, pick) : await runImport({parsed:b.parsed, name:R.name, target:R.target, fileName:`Range ${b.first}–${b.last}`});
     const name = catName(cid) === 'Unknown category' ? R.name.trim() : catName(cid);
-    S.range={target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, affix:false, prefix:'', suffix:'', msg:'', busy:false,
-      done:`${plural(n,'Doc ID')} added to ${name}. Secretaries can request them now.`};
+    S.range={target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, affix:false, prefix:'', suffix:'', source:'range', bankDep:'any', bankQty:'', msg:'', busy:false,
+      done:`${plural(n,'Doc ID')} ${fromBank?'moved from the Doc ID Bank to':'added to'} ${name}. Secretaries can request them now.`};
     toast('Range added.');
   } catch(e){
     R.busy=false; R.msg = e instanceof AppError ? e.message : (e&&e.code==='quota_exceeded' ? 'The database is full. Retire old categories first.' : 'The range wasn’t added. Nothing was changed. Try again.');
@@ -1220,7 +1507,7 @@ function importCard(imp){
     fresh.length ? el('div',{class:'stack',style:'gap:12px'},
       el('div',{class:'field'}, el('label',{for:'imp-t-'+imp.key},'Add these Doc IDs to'),
         el('select',{id:'imp-t-'+imp.key, value:imp.target, onchange:e=>{imp.target=e.target.value; render();}},
-          opt('new','A new category', imp.target==='new'), allCats().map(([id,c])=>opt(id, `Existing category: ${c.name}`, imp.target===id)))),
+          opt('new','A new category', imp.target==='new'), openCats().map(([id,c])=>opt(id, `Existing category: ${c.name}`, imp.target===id)))),
       imp.target==='new' ? el('div',{class:'field'}, el('label',{for:'imp-n-'+imp.key},'Category name'),
         el('input',{id:'imp-n-'+imp.key, type:'text', value:imp.name, oninput:e=>{imp.name=e.target.value;}}),
         imp.sameNameAs ? el('span',{class:'hint'}, 'A category with this name already exists. If this is a new range for it, choose it above instead.') : null) : null,
@@ -1234,31 +1521,36 @@ function importCard(imp){
 }
 function adminPending(){
   const all=derive().records.filter(r=>r.status==='Reserved');
-  if (!all.length) return el('div',{class:'card empty-state'}, el('h2',null,'Nothing is waiting'), el('p',null,'Doc IDs show up here when someone gets them but hasn’t clicked Done yet.'));
+  if (!all.length) return el('div',{class:'card empty-state'}, el('h2',null,'Nothing is reserved'), el('p',null,'Doc IDs show up here when someone gets them but hasn’t clicked Done yet, or keeps them reserved for later.'));
   return el('div',{class:'stack'},
-    el('p',{class:'hint',style:'margin:0'},'These Doc IDs were handed out but the person hasn’t clicked Done. They stay held and are never given to anyone else. Confirm them if they were used, or cancel them if not.'),
+    el('p',{class:'hint',style:'margin:0;max-width:80ch'},'These Doc IDs are reserved: handed out, but Done hasn’t been clicked. Mark them as used if they went into a document. Release them back to the range if they were never used, so they can be handed out again. Cancel them only if they may have been used somewhere; cancelled Doc IDs are never reused.'),
     el('div',{class:'scroll'}, el('table',null,
-      el('thead',null, el('tr',null, ['Project','Doc IDs','Category','Requested','By',''].map(h=>el('th',null,h)))),
-      el('tbody',null, groupsOf(all).map(list=>{ const f=list[0]; const refs=list.map(r=>({catId:r.catId, idx:r.idx}));
+      el('thead',null, el('tr',null, ['Project','Doc IDs','Reserved for','Category','Requested','By',''].map(h=>el('th',null,h)))),
+      el('tbody',null, groupsOf(all).map(list=>{ const f=list[0]; const refs=list.map(r=>({catId:r.catId, idx:r.idx, key:rk(r)}));
         return el('tr',null, el('td',null, el('b',null,f.mnemonic)), el('td',{class:'num'}, list.map(r=>`${r.regular} (${r.docType})`).join(', ')),
+          el('td',null, f.reservedFor||el('span',{class:'muted'},'—')),
           el('td',null,catName(f.catId)), el('td',{style:'white-space:nowrap'}, fmtDate(f.reservedAt)), el('td',null,nameOf(f.reservedBy)),
           el('td',null, el('div',{class:'row',style:'flex-wrap:nowrap'},
             el('button',{class:'btn', onclick:async()=>{ try{ await setStatus(refs,'Assigned','Marked as used','Confirmed by administrator'); toast('Marked as used.'); }catch(e){ toast('Couldn’t save. Try again.'); } }},'Mark as used'),
-            el('button',{class:'btn danger', onclick:async()=>{ if(!confirm('Cancel these Doc IDs? They will never be given out again.')) return; try{ await setStatus(refs,'Cancelled','Cancelled','Cancelled by administrator (Done was never clicked)'); toast('Cancelled.'); }catch(e){ toast('Couldn’t cancel. Try again.'); } }},'Cancel')))); })))));
+            el('button',{class:'btn', onclick:async()=>{
+              const why=prompt(`Release ${list.length>1?'these Doc IDs':'this Doc ID'} back to ${catName(f.catId)}? Only do this if ${list.length>1?'they were':'it was'} never pasted into any document.\n\nReason:`, 'Not needed any more');
+              if (why==null) return; if (!why.trim()){ toast('A reason is needed.'); return; }
+              try{ const n=await releaseRecords(refs, why.trim()); toast(`${plural(n,'Doc ID')} released back to the range.`); }catch(e){ toast('Couldn’t release. Try again.'); } }},'Release'),
+            el('button',{class:'btn danger', onclick:async()=>{ if(!confirm('Cancel these Doc IDs? They will never be given out again.')) return; try{ await setStatus(refs,'Cancelled','Cancelled','Cancelled by administrator'); toast('Cancelled.'); }catch(e){ toast('Couldn’t cancel. Try again.'); } }},'Cancel')))); })))));
 }
 function adminReports(){
   const {stats,records}=derive(); const cats=allCats();
   const tot=cats.reduce((a,[id])=>{ const s=stats[id]; a.total+=s.total; a.used+=s.Assigned||0; a.res+=s.Reserved||0; a.can+=s.Cancelled||0; a.left+=s.remaining; return a; },{total:0,used:0,res:0,can:0,left:0});
-  const types={}; for (const r of records){ const t=types[r.docType] ||= {Assigned:0,Reserved:0,Cancelled:0}; t[r.status]++; }
-  const months={}; for (const r of records){ if (r.status==='Cancelled') continue; const m=String(r.reservedAt).slice(0,7); months[m]=(months[m]||0)+1; }
+  const types={}; for (const r of records){ const t=types[r.docType] ||= {Assigned:0,Reserved:0,Cancelled:0,Released:0}; t[r.status]=(t[r.status]||0)+1; }
+  const months={}; for (const r of records){ if (r.status==='Cancelled' || r.status==='Released') continue; const m=String(r.reservedAt).slice(0,7); months[m]=(months[m]||0)+1; }
   const pct=(a,b)=>b?Math.round(a/b*100)+'%':'—';
   return el('div',{class:'stack'},
     el('div',{class:'card'}, el('div',{class:'stats'}, stat(tot.total,'Doc IDs loaded'), stat(tot.used,'used'), stat(tot.res,'waiting for Done'), stat(tot.can,'cancelled'), stat(tot.left,'left'),
-      el('div',{class:'stat'}, el('b',null,pct(tot.used+tot.res+tot.can,tot.total)), el('span',null,'issued')))),
+      el('div',{class:'stat'}, el('b',null,pct(tot.used+tot.res+tot.can,tot.total)), el('span',null,'issued')), stat(bankEntries().length,'in the Doc ID Bank'))),
     el('div',{class:'row'}, el('h2',{style:'margin:0'},'By category'), el('span',{class:'spacer'}), S.downloads ? el('button',{class:'btn', onclick:exportReport},'Export report to Excel') : null),
     el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, ['Category','Total','Used','Waiting','Cancelled','Left','Issued','Status'].map(h=>el('th',null,h)))),
       el('tbody',null, cats.map(([id,c])=>{ const s=stats[id]; return el('tr',null, el('td',null,c.name), ...[s.total,s.Assigned||0,s.Reserved||0,s.Cancelled||0,s.remaining].map(n=>el('td',{class:'num'},n.toLocaleString())),
-        el('td',{class:'num'},pct(s.issued,s.total)), el('td',null, el('span',{class:'chip '+(c.archived?'':s.level)}, c.archived?'Retired':s.level==='ok'?'Healthy':s.level==='low'?'Running low':'Empty'))); })))),
+        el('td',{class:'num'},pct(s.issued,s.total)), el('td',null, el('span',{class:'chip '+levelClass(c,s)}, levelLabel(c,s)))); })))),
     el('h2',{style:'margin:8px 0 0'},'By document type'),
     Object.keys(types).length ? el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, ['Document type','Used','Waiting','Cancelled'].map(h=>el('th',null,h)))),
       el('tbody',null, Object.entries(types).sort().map(([t,v])=>el('tr',null, el('td',null,t), el('td',{class:'num'},v.Assigned), el('td',{class:'num'},v.Reserved), el('td',{class:'num'},v.Cancelled)))))) : el('p',{class:'hint'},'No Doc IDs have been handed out yet.'),
@@ -1270,7 +1562,7 @@ async function exportReport(){
   if (!window.XLSX){ toast('The Excel exporter didn’t load. Reload the page and try again.'); return; }
   const {stats,records}=derive(); const wb=XLSX.utils.book_new();
   const cat=[['Category','Total','Used','Waiting for Done','Cancelled','Left','Issued %','Reminder level','Status']];
-  for (const [id,c] of allCats()){ const s=stats[id]; cat.push([c.name,s.total,s.Assigned||0,s.Reserved||0,s.Cancelled||0,s.remaining, s.total?Math.round(s.issued/s.total*1000)/10:0, s.threshold, c.archived?'Retired':s.level==='ok'?'Healthy':s.level==='low'?'Running low':'Empty']); }
+  for (const [id,c] of allCats()){ const s=stats[id]; cat.push([c.name,s.total,s.Assigned||0,s.Reserved||0,s.Cancelled||0,s.remaining, s.total?Math.round(s.issued/s.total*1000)/10:0, s.threshold, levelLabel(c,s)]); }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cat), 'By category');
   const tt=[['Category','Document type','Used','Waiting for Done','Cancelled']];
   for (const [id,c] of allCats()) for (const [t,v] of Object.entries(stats[id].byType).sort()) tt.push([c.name,t,v.Assigned||0,v.Reserved||0,v.Cancelled||0]);
@@ -1416,7 +1708,7 @@ function adminPeople(){
 
 /* ---------- Boot ---------- */
 function subscribe(){
-  const map={categories:'cats', pool:'pools', alloc:'alloc', rec:'rec', config:'config'};
+  const map={categories:'cats', pool:'pools', alloc:'alloc', rec:'rec', config:'config', bank:'bank'};
   for (const [coll,key] of Object.entries(map)){
     S.unsubs.push(S.db.collection(coll).onSnapshot(snap=>{
       const m={}; for (const d of snap.docs) if (d.exists) m[d.id]=d.data();
@@ -1434,7 +1726,7 @@ function subscribe(){
 }
 function resetData(){
   S.unsubs.forEach(u=>{ try{u();}catch(e){} }); S.unsubs=[];
-  Object.assign(S, {cats:{}, pools:{}, alloc:{}, rec:{}, config:{}, members:{}, ready:false, isAdmin:false, d:null});
+  Object.assign(S, {cats:{}, pools:{}, alloc:{}, rec:{}, config:{}, bank:{}, members:{}, ready:false, isAdmin:false, d:null});
   for (const k of Object.keys(S.loaded)) S.loaded[k]=false;
 }
 async function enterApp(){
