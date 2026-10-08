@@ -324,17 +324,22 @@ function derive(){
     const c=S.cats[cid];
     s.returned = [...new Set(S.alloc[cid]?.returned||[])].filter(i=>{ const st=statusesByIdx[cid]?.[i]; return st && st.length && st.every(x=>x==='Released'); }).sort((a,b)=>a-b);
     if (c.closed){
-      s.total=c.closedNext||0; s.next=s.total; s.remaining=0; s.issued=s.total; s.released=c.released||0; s.threshold=0; s.level='closed';
+      s.issued=(s.Reserved||0)+(s.Assigned||0)+(s.Cancelled||0); s.total=s.issued; s.next=c.closedNext||0; s.remaining=0; s.released=c.released||0; s.threshold=0; s.level='closed';
       continue;
     }
     const next = Math.max(S.alloc[cid]?.next||0, s.maxIdx+1);
-    s.next=next; s.remaining=Math.max(0, s.total-next)+s.returned.length; s.issued=next-s.returned.length;
+    s.next=next; s.remaining=Math.max(0, s.total-next)+s.returned.length;
+    s.issued=(s.Reserved||0)+(s.Assigned||0)+(s.Cancelled||0); s.total=s.issued+s.remaining;
     s.nextIdx = s.returned.length ? s.returned[0] : next; s.threshold = Number.isFinite(c.lowThreshold) ? c.lowThreshold : Math.max(10, Math.round(s.total*0.1));
     s.level = s.remaining===0 ? 'empty' : (s.remaining<=s.threshold ? 'low' : 'ok');
   }
   return (S.d={pools,stats,records,names});
 }
 const catName = id => id==='bank' ? 'the Doc ID Bank' : (S.cats[id]?.name || 'Unknown category');
+/* "Retired" and "Closed" count only when truly switched on. A value typed by hand
+   in the Firebase console, such as the text "false", must not hide a category. */
+const onFlag = v => v===true || String(v??'').trim().toLowerCase()==='true';
+const normCat = c => c ? {...c, archived:onFlag(c.archived), closed:onFlag(c.closed)} : c;
 const activeCats = () => Object.entries(S.cats).filter(([,c])=>!c.archived && !c.closed).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
 const openCats = () => Object.entries(S.cats).filter(([,c])=>!c.closed).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
 const levelLabel = (c,s) => c.closed ? 'Closed' : c.archived ? 'Retired' : s.level==='ok' ? 'Healthy' : s.level==='low' ? 'Running low' : 'Empty';
@@ -398,7 +403,7 @@ async function allocate({catId, lines, mnemonic, format}){
   return S.db.runTransaction(async tx=>{
     const cs = await tx.get(catRef);
     if (!cs.exists) throw new AppError('This category no longer exists.');
-    const cat = cs.data();
+    const cat = normCat(cs.data());
     if (cat.archived) throw new AppError('This category has been retired by an administrator.');
     if (cat.closed) throw new AppError('This category has been closed. Choose another category.');
     if ((cat.total||0) !== pool.length) pool = await freshPool(cat);
@@ -477,7 +482,7 @@ async function releaseRecords(refs, reason){
     const c0=await catRef.get(); if (!c0.exists) throw new AppError('This category no longer exists.');
     const pool=await freshPool(c0.data());
     count += await S.db.runTransaction(async tx=>{
-      const c=(await tx.get(catRef)).data(); const a=await tx.get(allocRef);
+      const c=normCat((await tx.get(catRef)).data()); const a=await tx.get(allocRef);
       const byChunk={}; for (const r of list) (byChunk[Math.floor(r.idx/REC_CHUNK)] ||= []).push(r);
       const snaps={}; for (const ch of Object.keys(byChunk)) snaps[ch]=await tx.get(recRefFor(catId,ch));
       const at=nowIso(); const freed=[];
@@ -510,7 +515,7 @@ async function closeCategory(catId){
   const c0=await catRef.get(); if (!c0.exists) throw new AppError('This category no longer exists.');
   let pool=await freshPool(c0.data());
   return S.db.runTransaction(async tx=>{
-    const cs=await tx.get(catRef); const c=cs.data();
+    const cs=await tx.get(catRef); const c=normCat(cs.data());
     if (c.closed) throw new AppError('This category is already closed.');
     if ((c.total||0)!==pool.length) pool=await freshPool(c);
     const as=await tx.get(allocRef); let next=as.exists?(as.data().next||0):0;
@@ -534,6 +539,53 @@ async function closeCategory(catId){
     tx.update(catRef, {closed:true, closedAt:at, closedBy:S.uid, closedByName:myName(), closedNext:next, released:released.length});
     return {released:released.length, issued:next-back.length};
   });
+}
+/* Reopen a closed category: its unused Doc IDs still in the Doc ID Bank come back to it,
+   placed after everything it already had, so the next request takes them. Records are untouched. */
+async function reopenCategory(catId){
+  const catRef=S.db.doc('categories/'+catId);
+  const depIds=Object.entries(S.bank).filter(([,d])=>d.sourceCatId===catId).map(([id])=>id);
+  return S.db.runTransaction(async tx=>{
+    const cs=await tx.get(catRef); if (!cs.exists) throw new AppError('This category no longer exists.');
+    const c=normCat(cs.data()); if (!c.closed) throw new AppError('This category is already open.');
+    const deps=[], back=[];
+    for (const id of depIds){ const sn=await tx.get(S.db.doc('bank/'+id)); if (!sn.exists) continue; const d=sn.data(); if (d.sourceCatId!==catId) continue;
+      deps.push(id); (d.regs||[]).forEach((r,i)=>back.push([String(r), (d.meps||[])[i]||''])); }
+    back.sort((a,b)=>cmpId(a[0],b[0]));
+    const at=nowIso(); const chunks=[];
+    for (let i=0;i<back.length;i+=POOL_CHUNK){ const id=catId+'__p'+rid(); const part=back.slice(i,i+POOL_CHUNK);
+      tx.set(S.db.doc('pool/'+id), {catId, regs:part.map(x=>x[0]), meps:part.map(x=>x[1])}); chunks.push({id, count:part.length}); }
+    for (const id of deps) tx.delete(S.db.doc('bank/'+id));
+    const src = back.length ? [{name:'Reopened: Doc IDs returned from the Doc ID Bank', importedAt:at, importedBy:S.uid, importedByName:myName(),
+      count:back.length, first:back[0][0], last:back[back.length-1][0], mepsPrefix:c.mepsPrefix||'', mepsSuffix:c.mepsSuffix||''}] : [];
+    tx.update(catRef, {closed:false, archived:false, reopenedAt:at, reopenedBy:S.uid, reopenedByName:myName(),
+      total:(c.total||0)+back.length, chunks:[...(c.chunks||[]), ...chunks], sourceFiles:[...(c.sourceFiles||[]), ...src]});
+    return back.length;
+  });
+}
+function openReopenModal(id){
+  const c=S.cats[id]; const root=document.getElementById('modal-root');
+  const inBank=Object.values(S.bank).filter(d=>d.sourceCatId===id).reduce((a,d)=>a+(d.regs||[]).length,0);
+  const err=el('p',{class:'err-text', role:'alert'});
+  const go2=el('button',{class:'btn primary', onclick:doIt}, 'Reopen category');
+  const dlg=el('div',{class:'dialog', role:'dialog', 'aria-modal':'true', 'aria-labelledby':'ro-t'},
+    el('header',null, el('h2',{id:'ro-t'}, `Reopen ${c.name}?`)),
+    el('div',{class:'body'},
+      el('ul',{class:'notes',style:'display:grid;gap:8px'},
+        inBank ? el('li',null, el('b',null, plural(inBank,'Doc ID')), ' from this category are still in the Doc ID Bank. They come back to it and will be handed out next.')
+               : el('li',null, 'None of this category’s unused Doc IDs are left in the Doc ID Bank (they were moved to other categories). It will reopen with no Doc IDs; you can add a range to it afterwards.'),
+        el('li',null, 'Doc IDs already handed out and all records stay exactly as they are.'),
+        el('li',null, 'Secretaries can request Doc IDs from it again.')),
+      err),
+    el('footer',null, el('button',{class:'btn', onclick:close}, 'Keep it closed'), go2));
+  root.replaceChildren(el('div',{class:'overlay', onclick:e=>{ if(e.target===e.currentTarget) close(); }}, dlg));
+  document.body.style.overflow='hidden';
+  function close(){ root.replaceChildren(); document.body.style.overflow=''; }
+  async function doIt(){
+    go2.disabled=true; go2.replaceChildren(el('span',{class:'spin'}),'Reopening…'); err.textContent='';
+    try { const n=await reopenCategory(id); close(); toast(`${c.name} is open again${n?` with ${plural(n,'Doc ID')} back from the Doc ID Bank`:''}.`, 5000); }
+    catch(x){ err.textContent = x instanceof AppError ? x.message : 'The category couldn’t be reopened. Nothing was changed. Try again.'; go2.disabled=false; go2.textContent='Reopen category'; }
+  }
 }
 /* Pick Doc IDs from the bank for the Add a range screen. */
 function buildBankPick(R){
@@ -565,7 +617,7 @@ async function withdrawFromBank(R, pick){
   await S.db.runTransaction(async tx=>{
     const snaps={}; for (const d of Object.keys(byDep)) snaps[d]=await tx.get(S.db.doc('bank/'+d));
     let c=null;
-    if (!isNew){ const cs=await tx.get(S.db.doc('categories/'+catId)); if (!cs.exists) throw new AppError('That category no longer exists.'); c=cs.data(); if (c.closed) throw new AppError('That category is closed.'); }
+    if (!isNew){ const cs=await tx.get(S.db.doc('categories/'+catId)); if (!cs.exists) throw new AppError('That category no longer exists.'); c=normCat(cs.data()); if (c.closed) throw new AppError('That category is closed.'); }
     for (const [d,set] of Object.entries(byDep)){
       const sn=snaps[d]; if (!sn.exists) throw new AppError(taken);
       const data=sn.data(); const regs=(data.regs||[]).map(String), meps=data.meps||[];
@@ -910,6 +962,12 @@ async function claimSetup(){
 function requestView(){
   const {stats, pools}=derive();
   const cats=activeCats();
+  const hidden=Object.values(S.cats);
+  if (!cats.length && hidden.length) return el('div',{class:'card empty-state'}, el('h2',null,'No categories are open for requests'),
+    el('p',null, `${plural(hidden.length,'category','categories')} exist, but ${hidden.length===1?'it is':'they are all'} retired or closed: `,
+      hidden.map(c=>`${c.name} (${c.closed?'closed':'retired'})`).join(', '), '.'),
+    S.isAdmin ? el('p',null, 'To use a retired category again, go to Admin → Categories, open Details and settings, and click Bring back.') : el('p',null,'Ask an administrator to reopen one.'),
+    S.isAdmin ? el('button',{class:'btn primary', onclick:()=>{S.adminTab='categories'; go('admin');}}, 'Go to Categories') : null);
   if (!cats.length) return el('div',{class:'card empty-state'}, el('h2',null,'No Doc ID categories yet'),
     el('p',null, S.isAdmin ? 'Add a range of Doc IDs to create the first category.' : 'An administrator needs to upload a spreadsheet of Doc IDs first.'),
     S.isAdmin ? el('button',{class:'btn primary', onclick:()=>{S.adminTab='range'; go('admin');}}, 'Add a range') : null);
@@ -1112,8 +1170,9 @@ function lookupUnassigned(q){
   q=mepsDigits(q).trim(); if (!q || !/^[A-Za-z0-9\-_.\/]{4,}$/.test(q)) return null;
   const {pools,stats}=derive();
   for (const [cid,p] of Object.entries(pools)){
-    const i = p.arr.findIndex(([reg])=>String(reg)===q);
-    if (i<0) continue;
+    const hits=[]; p.arr.forEach(([reg],k)=>{ if (String(reg)===q) hits.push(k); });
+    if (!hits.length) continue;
+    const i = hits.find(k=>k>=stats[cid].next || stats[cid].returned.includes(k)) ?? hits[0];
     const c=S.cats[cid]; if (c && c.closed && i>=(c.closedNext||0)) continue;   // released to the bank
     return {catId:cid, idx:i, free: i>=stats[cid].next || stats[cid].returned.includes(i)};
   }
@@ -1300,7 +1359,8 @@ function adminCategories(){
       el('div',{class:'row'},
         el('button',{class:'btn', 'aria-expanded':String(open), onclick:()=>{open?S.openCats.delete(id):S.openCats.add(id); render();}}, open?'Hide details':'Details and settings'),
         el('button',{class:'btn ghost', onclick:()=>{S.filters={q:'',catId:id,docType:'',status:'',from:'',to:''}; go('records');}},'View assigned Doc IDs'),
-        c.closed ? null : el('button',{class:'btn ghost', onclick:()=>{S.range={...S.range, target:id, source:'range', msg:'', done:''}; S.adminTab='range'; render();}},'Add a new range')),
+        c.closed ? el('button',{class:'btn', onclick:()=>openReopenModal(id)},'Reopen category')
+          : el('button',{class:'btn ghost', onclick:()=>{S.range={...S.range, target:id, source:'range', msg:'', done:''}; S.adminTab='range'; render();}},'Add a new range')),
       open ? el('div',{class:'stack',style:'gap:14px;border-top:1px solid var(--line);padding-top:14px'},
         el('dl',{class:'kv'},
           c.closed ? [el('dt',null,'Closed'), el('dd',null, `${fmtDate(c.closedAt)} by ${c.closedByName||nameOf(c.closedBy)}. ${plural(c.released||0,'unused Doc ID')} moved to the Doc ID Bank.`)]
@@ -1311,7 +1371,7 @@ function adminCategories(){
           (c.mepsPrefix||c.mepsSuffix) ? [el('dt',null,'MEPS prefix / suffix'), el('dd',null, `${c.mepsPrefix||'(none)'} / ${c.mepsSuffix||'(none)'}`)] : null,
           el('dt',null,'Ranges loaded'), el('dd',null, (c.sourceFiles||[]).map(f=>el('div',null, `${f.name}: ${f.first}–${f.last} (${f.count.toLocaleString()}), ${fmtDate(f.importedAt)}`)))),
         (c.notes||[]).length ? el('div',null, el('h3',null,'Notes from the spreadsheet'), el('ul',{class:'notes'}, c.notes.map(n=>el('li',null,n)))) : null,
-        c.closed ? el('div',{class:'row'}, el('span',{class:'spacer'}),
+        c.closed ? el('div',{class:'row'}, el('span',{class:'spacer'}), el('button',{class:'btn', onclick:()=>openReopenModal(id)},'Reopen category'),
           el('button',{class:'btn', onclick:async()=>{ const n=prompt('Category name', c.name); if(!n||!n.trim()||n.trim()===c.name) return;
             try{ await S.db.doc('categories/'+id).update({name:n.trim()}); }catch(e){ toast('Couldn’t rename the category.'); } }},'Rename')) :
         el('div',{class:'row',style:'align-items:flex-end'},
@@ -1333,9 +1393,10 @@ function adminCategories(){
 }
 function openCloseModal(id){
   const c=S.cats[id], s=derive().stats[id]; const root=document.getElementById('modal-root');
-  const ok=el('input',{type:'checkbox', id:'cl-ok'}); const err=el('p',{class:'err-text', role:'alert'});
+  const ok=el('input',{type:'text', id:'cl-ok', autocomplete:'off', spellcheck:'false'}); const err=el('p',{class:'err-text', role:'alert'});
   const go2=el('button',{class:'btn primary', disabled:true, onclick:doClose}, 'Close category');
-  ok.addEventListener('change',()=>{ go2.disabled=!ok.checked; });
+  const match=()=>ok.value.trim().toLowerCase()===c.name.trim().toLowerCase();
+  ok.addEventListener('input',()=>{ go2.disabled=!match(); });
   const dlg=el('div',{class:'dialog', role:'dialog', 'aria-modal':'true', 'aria-labelledby':'cl-t'},
     el('header',null, el('h2',{id:'cl-t'}, `Close ${c.name}?`), el('p',{class:'hint',style:'margin:0'},'Do this when the project is over.')),
     el('div',{class:'body'},
@@ -1344,7 +1405,8 @@ function openCloseModal(id){
         el('li',null, el('b',null, plural(s.issued,'Doc ID')), ' already handed out stay with this category, with all their records. They are never reused, including cancelled ones.'),
         el('li',null, 'Secretaries won’t be able to request Doc IDs from this category any more.')),
       s.Reserved ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${plural(s.Reserved,'Doc ID')} still waiting for Done. ${s.Reserved===1?'It stays':'They stay'} with this category; you can still confirm or cancel ${s.Reserved===1?'it':'them'} under Waiting for Done.`)) : null,
-      el('label',{class:'row',style:'gap:8px;cursor:pointer;align-items:flex-start'}, ok, el('span',null,'I understand that closing a category can’t be undone.')),
+      el('div',{class:'field'}, el('label',{for:'cl-ok'}, `To confirm, type the category name: ${c.name}`), ok,
+        el('span',{class:'hint'},'If you close it by mistake, use Reopen category; its unused Doc IDs come back from the Doc ID Bank as long as they haven’t been moved to another category.')),
       err),
     el('footer',null, el('button',{class:'btn', onclick:close}, 'Keep it open'), go2));
   root.replaceChildren(el('div',{class:'overlay', onclick:e=>{ if(e.target===e.currentTarget) close(); }}, dlg));
@@ -1353,7 +1415,7 @@ function openCloseModal(id){
   async function doClose(){
     go2.disabled=true; go2.replaceChildren(el('span',{class:'spin'}),'Closing…'); err.textContent='';
     try { const r=await closeCategory(id); close(); toast(`${c.name} closed. ${plural(r.released,'Doc ID')} moved to the Doc ID Bank.`, 5000); }
-    catch(x){ err.textContent = x instanceof AppError ? x.message : 'The category couldn’t be closed. Nothing was changed. Try again.'; go2.disabled=!ok.checked; go2.textContent='Close category'; }
+    catch(x){ err.textContent = x instanceof AppError ? x.message : 'The category couldn’t be closed. Nothing was changed. Try again.'; go2.disabled=!match(); go2.textContent='Close category'; }
   }
 }
 function adminBank(){
@@ -1711,6 +1773,7 @@ function subscribe(){
   for (const [coll,key] of Object.entries(map)){
     S.unsubs.push(S.db.collection(coll).onSnapshot(snap=>{
       const m={}; for (const d of snap.docs) if (d.exists) m[d.id]=d.data();
+      if (key==='cats') for (const k of Object.keys(m)) m[k]=normCat(m[k]);
       S[key]=m; S.loaded[key]=true; invalidate();
       if (!S.ready && Object.values(S.loaded).every(Boolean)) S.ready=true;
       schedule();
