@@ -802,15 +802,7 @@ function renderBanners(){
       ? [el('strong',null,'The database rules are out of date.'), ` Doc ID Desk can’t read ${what}. In Firebase, go to Firestore Database → Rules, paste the newest firestore.rules from GitHub, click Publish, then reload this page.`]
       : [el('strong',null,'Some information couldn’t be loaded.'), ' Ask an administrator to update the database rules.']));
   }
-  if (S.ready){
-    const {stats}=derive();
-    for (const [cid,c] of activeCats()){
-      const s=stats[cid]; if (!s) continue;
-      if (S.view==='request' && cid===S.form.catId) continue; // shown in the category panel instead
-      if (s.level==='empty') out.push(banner('empty', [el('strong',null,`${c.name} has no Doc IDs left.`),' Ask for a new range of Doc IDs for this category', S.isAdmin?' and upload it under Admin.':'.']));
-      else if (s.level==='low') out.push(banner('low', [el('strong',null,`${c.name} is running low: ${plural(s.remaining,'Doc ID')} left of ${s.total.toLocaleString()}.`),' Ask for another range of Doc IDs for this category.']));
-    }
-  }
+  // Running-low warnings appear only for the selected category (Request page) and in the pop-up.
   b.replaceChildren(...out);
 }
 function banner(kind, content){ return el('div',{class:'banner '+kind, role: kind==='empty'||kind==='err'?'alert':null}, el('span',{class:'ico','aria-hidden':'true'}, el('i',null,'!')), el('p',null,content)); }
