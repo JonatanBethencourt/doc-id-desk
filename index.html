@@ -243,6 +243,12 @@ const MEPS_MAP = {'\uF73D':'0'};
 for (let d=1; d<=9; d++) MEPS_MAP[String.fromCharCode(0xF733+d)] = String(d);
 function mepsDigits(s){ let o=''; for (const ch of String(s||'')) o += MEPS_MAP[ch] ?? (/[\uE000-\uF8FF]/.test(ch) ? '?' : ch); return o; }
 function toMeps(digits){ let o=''; for (const ch of String(digits)) o += ch==='0' ? '\uF73D' : (ch>='1'&&ch<='9' ? String.fromCharCode(0xF733+Number(ch)) : ch); return o; }
+/* The MEPS form a Doc ID gets when handed out. Stored Doc ID lists are never rewritten:
+   once a category's MEPS settings are edited, MEPS is built from its current prefix and suffix. */
+function mepsFor(cat, regular, poolMeps){
+  if (cat && cat.mepsCustom && /^\d+$/.test(String(regular))) return toMeps(cat.mepsPrefix||'')+toMeps(String(regular))+toMeps(cat.mepsSuffix||'');
+  return poolMeps ? String(poolMeps) : '';
+}
 const MEPS_FONT = (()=>{ try{ const c=document.createElement('canvas').getContext('2d'); const t='\uF734\uF735\uF736\uF737\uF73D\uF73C';
   c.font='40px monospace'; const a=c.measureText(t).width; c.font='40px "MEPS Bookman Universal", monospace'; return Math.abs(c.measureText(t).width-a)>0.5; }catch(e){ return false; } })();
 
@@ -281,7 +287,7 @@ const S = {
   cats:{}, pools:{}, alloc:{}, rec:{}, config:{},
   loaded:{cats:false,pools:false,alloc:false,rec:false,config:false,bank:false}, bank:{},
   view:'request', adminTab:'categories',
-  form:{catId:'', format:'regular', mnemonic:'', lines:[{type:'', qty:1}]},
+  form:{catId:'', format:'regular', mnemonic:'', lines:[{type:'', qty:1}], addYear:false, year:String(new Date().getFullYear())},
   formErr:'', busy:false, busyMsg:'',
   filters:{q:'', catId:'', docType:'', status:'', from:'', to:''}, sel:new Set(), showLimit:200, expanded:new Set(),
   imports:[], range:{target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, affix:false, prefix:'', suffix:'', source:'range', bankDep:'any', bankQty:'', msg:'', busy:false, done:''}, openCats:new Set(), showAllIds:new Set(),
@@ -394,7 +400,7 @@ async function freshPool(cat){
 }
 
 /* Hand out the next free Doc IDs. lines: [{docType, qty}] */
-async function allocate({catId, lines, mnemonic, format}){
+async function allocate({catId, lines, mnemonic, format, mepsYear}){
   const count = lines.reduce((a,l)=>a+l.qty,0);
   const reqId = rid('q');
   const catRef = S.db.doc('categories/'+catId), allocRef = S.db.doc('alloc/'+catId);
@@ -441,7 +447,8 @@ async function allocate({catId, lines, mnemonic, format}){
       const idx=slots[si++]; const [regular, meps] = pool[idx];
       const ch=seen[Math.floor(idx/REC_CHUNK)]; const ents = ch && ch.exists ? (ch.data().entries||{}) : {};
       const before = Object.values(ents).filter(e=>e.idx===idx).length;
-      items.push({idx, key: before ? `i${idx}_${before}` : recKey(idx), issue: before+1, catId, regular:String(regular), meps:meps?String(meps):'', format, mnemonic, docType:l.docType,
+      const base = mepsFor(cat, regular, meps); const yr = format==='meps' && base && mepsYear ? String(mepsYear) : '';
+      items.push({idx, key: before ? `i${idx}_${before}` : recKey(idx), issue: before+1, catId, regular:String(regular), meps: base + (yr ? toMeps(yr) : ''), ...(yr?{mepsYear:yr}:{}), format, mnemonic, docType:l.docType,
         status:'Reserved', reqId, reservedAt:at, reservedBy:S.uid, reservedByName:myName(),
         history:[{at, by:S.uid, byName:myName(), action: before ? 'Handed out again' : 'Handed out', note:`${l.docType} for project ${mnemonic}${before?' (it had been released back to the range)':''}`}]});
     }
@@ -562,6 +569,63 @@ async function reopenCategory(catId){
       total:(c.total||0)+back.length, chunks:[...(c.chunks||[]), ...chunks], sourceFiles:[...(c.sourceFiles||[]), ...src]});
     return back.length;
   });
+}
+function openEditCategory(id){
+  const c=S.cats[id]; const s=derive().stats[id]; const pool=derive().pools[id]; const root=document.getElementById('modal-root');
+  const nm=el('input',{id:'ec-n', type:'text'}); nm.value=c.name;
+  const mp=el('input',{id:'ec-m', type:'checkbox', checked:!!c.hasMeps});
+  const pre=el('input',{id:'ec-p', type:'text', autocomplete:'off', spellcheck:'false', placeholder:'e.g. S-'}); pre.value=c.mepsPrefix||'';
+  const suf=el('input',{id:'ec-s', type:'text', autocomplete:'off', spellcheck:'false', placeholder:'e.g. -E'}); suf.value=c.mepsSuffix||'';
+  const notes=el('textarea',{id:'ec-no'}); notes.value=(c.notes||[]).join('\n');
+  const thr=el('input',{id:'ec-t', type:'number', min:0}); thr.value= c.closed ? '' : s.threshold;
+  const prev=el('span',{class:'hint'}); const err=el('p',{class:'err-text', role:'alert'});
+  const nextE = pool && !c.closed ? pool.arr[s.nextIdx ?? s.next] : null;
+  const upd=()=>{ const on=mp.checked; pre.disabled=suf.disabled=!on;
+    prev.textContent = nextE && on && /^\d+$/.test(String(nextE[0])) ? `Next MEPS number will look like: ${mepsDigits(toMeps(pre.value)+toMeps(String(nextE[0]))+toMeps(suf.value))}` : ''; };
+  [mp,pre,suf].forEach(x=>x.addEventListener('input',upd)); mp.addEventListener('change',upd);
+  const saveB=el('button',{class:'btn primary', onclick:doSave}, 'Save changes');
+  const dlg=el('div',{class:'dialog', role:'dialog', 'aria-modal':'true', 'aria-labelledby':'ec-h'},
+    el('header',null, el('h2',{id:'ec-h'}, `Edit ${c.name}`),
+      el('p',{class:'hint',style:'margin:0'},'Changes apply to Doc IDs handed out from now on. Doc IDs already handed out, and their records, keep exactly what was copied.')),
+    el('div',{class:'body'},
+      el('div',{class:'field'}, el('label',{for:'ec-n'},'Category name'), nm),
+      el('label',{class:'row',style:'gap:8px;cursor:pointer'}, mp, 'Provide MEPS numbers'),
+      el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:10px'},
+        el('div',{class:'field'}, el('label',{for:'ec-p'},'MEPS prefix'), pre),
+        el('div',{class:'field'}, el('label',{for:'ec-s'},'MEPS suffix'), suf)),
+      prev,
+      el('div',{class:'field'}, el('label',{for:'ec-no'},'Notes (one per line)'), notes),
+      c.closed ? null : el('div',{class:'field',style:'max-width:240px'}, el('label',{for:'ec-t'},'Warn when this many are left'), thr),
+      err),
+    el('footer',null, el('button',{class:'btn', onclick:close},'Cancel'), saveB));
+  root.replaceChildren(el('div',{class:'overlay', onclick:e=>{ if(e.target===e.currentTarget) close(); }}, dlg));
+  document.body.style.overflow='hidden'; upd(); setTimeout(()=>nm.focus(),30);
+  function close(){ root.replaceChildren(); document.body.style.overflow=''; }
+  async function doSave(){
+    err.textContent='';
+    const name=nm.value.trim(), hasMeps=mp.checked, p=pre.value, sx=suf.value;
+    const nl=notes.value.split('\n').map(t=>t.trim()).filter(Boolean);
+    if (!name){ err.textContent='The category needs a name.'; return; }
+    if (p.length>20 || sx.length>20){ err.textContent='Keep the prefix and suffix to 20 characters or fewer.'; return; }
+    const t = c.closed ? null : parseInt(thr.value,10);
+    if (!c.closed && !(t>=0)){ err.textContent='The warning level must be 0 or more.'; return; }
+    const ch=[];
+    if (name!==c.name) ch.push(`name ${c.name} → ${name}`);
+    if (hasMeps!==!!c.hasMeps) ch.push(hasMeps?'MEPS turned on':'MEPS turned off');
+    if (p!==(c.mepsPrefix||'')) ch.push(`MEPS prefix “${c.mepsPrefix||''}” → “${p}”`);
+    if (sx!==(c.mepsSuffix||'')) ch.push(`MEPS suffix “${c.mepsSuffix||''}” → “${sx}”`);
+    if (nl.join('\n')!==(c.notes||[]).join('\n')) ch.push('notes changed');
+    if (!c.closed && t!==s.threshold) ch.push(`warning level → ${t}`);
+    if (!ch.length){ close(); return; }
+    const mepsChanged = hasMeps!==!!c.hasMeps || p!==(c.mepsPrefix||'') || sx!==(c.mepsSuffix||'');
+    const at=nowIso();
+    const patch={name, notes:nl, hasMeps, mepsPrefix:p, mepsSuffix:sx, edits:[...(c.edits||[]), {at, by:S.uid, byName:myName(), changes:ch.join('; ')}]};
+    if (mepsChanged) patch.mepsCustom=true;
+    if (!c.closed) patch.lowThreshold=t;
+    saveB.disabled=true;
+    try { await S.db.doc('categories/'+id).update(patch); close(); toast('Category saved.'); }
+    catch(x){ err.textContent='The changes couldn’t be saved. Try again.'; saveB.disabled=false; }
+  }
 }
 function openReopenModal(id){
   const c=S.cats[id]; const root=document.getElementById('modal-root');
@@ -989,8 +1053,16 @@ function requestView(){
       el('div',{class:'seg'},
         segOpt('fmt','regular','Regular number', f.format==='regular', false, ()=>{f.format='regular'; render();}),
         segOpt('fmt','meps','MEPS number', f.format==='meps', !cat.hasMeps, ()=>{f.format='meps'; render();})),
-      !cat.hasMeps ? el('span',{class:'hint'},'This category’s spreadsheet has no MEPS numbers.') :
+      !cat.hasMeps ? el('span',{class:'hint'},'This category has no MEPS numbers.') :
         el('span',{class:'hint'},'Both formats are the same Doc ID. Once it’s used in one format it’s used in both.')),
+    f.format==='meps' && cat.hasMeps ? el('div',{class:'field'},
+      el('label',{class:'row',style:'gap:8px;cursor:pointer'}, el('input',{id:'f-yr-on', type:'checkbox', checked:f.addYear, onchange:e=>{f.addYear=e.target.checked; render();}}), 'Add the year to the MEPS number'),
+      f.addYear ? el('div',{class:'row',style:'align-items:flex-end'},
+        el('div',{class:'field',style:'max-width:160px'}, el('label',{for:'f-yr'},'Year'),
+          el('input',{id:'f-yr', type:'text', inputmode:'numeric', maxlength:10, autocomplete:'off', value:f.year, oninput:e=>{ f.year=e.target.value; clearTimeout(f._y); f._y=setTimeout(()=>render(),250); }}))) : null,
+      (()=>{ const pe=pools[f.catId]?.arr[st.nextIdx ?? st.next]; if (!pe) return null;
+        const yr=f.addYear ? f.year.trim() : ''; const m=mepsFor(cat, pe[0], pe[1]) + (yr?toMeps(yr):'');
+        return m ? el('span',{class:'hint'}, 'Next MEPS number will look like: ', el('b',{class:'num'}, mepsDigits(m)), yr ? ' (the year goes after the category’s suffix, in MEPS characters)' : '') : null; })()) : null,
     el('div',{class:'field'}, el('label',{for:'f-mn'},'Project mnemonic'),
       el('input',{id:'f-mn', type:'text', value:f.mnemonic, autocomplete:'off', spellcheck:'false', placeholder:'e.g. JWB-SPR',
         oninput:e=>{ f.mnemonic=e.target.value; clearTimeout(f._t); f._t=setTimeout(()=>render(), 250); }}),
@@ -1054,13 +1126,15 @@ async function submitRequest(){
   if (!mnemonic){ S.formErr='Enter the project mnemonic.'; render(); document.getElementById('f-mn')?.focus(); return; }
   if (lines.some(l=>!l.docType)){ S.formErr='Choose a document type for each line.'; render(); return; }
   if (lines.some(l=>!Number.isInteger(l.qty) || l.qty<1)){ S.formErr='Each line needs a number of Doc IDs of 1 or more.'; render(); return; }
+  const yearOn = f.format==='meps' && f.addYear;
+  if (yearOn && (!f.year.trim() || f.year.trim().length>10)){ S.formErr='Enter the year to add to the MEPS number (up to 10 characters), or untick “Add the year”.'; render(); return; }
   const count=lines.reduce((a,l)=>a+l.qty,0);
   if (count>MAX_PER_REQUEST){ S.formErr=`You can get up to ${MAX_PER_REQUEST} Doc IDs in one request.`; render(); return; }
   const s=derive().stats[f.catId];
   if (count>s.remaining){ S.formErr=`Only ${plural(s.remaining,'Doc ID')} left in this category.`; render(); return; }
   S.busy=true; S.busyMsg=''; render();
   try {
-    const res = await allocate({catId:f.catId, lines, mnemonic, format:f.format});
+    const res = await allocate({catId:f.catId, lines, mnemonic, format:f.format, mepsYear: yearOn ? f.year.trim() : ''});
     S.busy=false; S.busyMsg=''; f.lines=[{type:lines[0].docType, qty:1}]; render();
     openAssignedModal(res);
   } catch(e){
@@ -1358,6 +1432,7 @@ function adminCategories(){
       el('div',{class:'gauge '+s.level}, el('i',{class:'used',style:`width:${usedPct}%`}), el('i',{class:'left',style:`width:${100-usedPct}%`})),
       el('div',{class:'row'},
         el('button',{class:'btn', 'aria-expanded':String(open), onclick:()=>{open?S.openCats.delete(id):S.openCats.add(id); render();}}, open?'Hide details':'Details and settings'),
+        el('button',{class:'btn ghost', onclick:()=>openEditCategory(id)},'Edit'),
         el('button',{class:'btn ghost', onclick:()=>{S.filters={q:'',catId:id,docType:'',status:'',from:'',to:''}; go('records');}},'View assigned Doc IDs'),
         c.closed ? el('button',{class:'btn', onclick:()=>openReopenModal(id)},'Reopen category')
           : el('button',{class:'btn ghost', onclick:()=>{S.range={...S.range, target:id, source:'range', msg:'', done:''}; S.adminTab='range'; render();}},'Add a new range')),
@@ -1369,19 +1444,18 @@ function adminCategories(){
           el('dt',null,'Last Doc ID'), el('dd',{class:'num'}, p.arr.length ? String(p.arr[p.arr.length-1][0]) : '—'),
           el('dt',null,'Formats'), el('dd',null, c.hasMeps ? 'Regular and MEPS' : 'Regular only'),
           (c.mepsPrefix||c.mepsSuffix) ? [el('dt',null,'MEPS prefix / suffix'), el('dd',null, `${c.mepsPrefix||'(none)'} / ${c.mepsSuffix||'(none)'}`)] : null,
+          (c.edits||[]).length ? [el('dt',null,'Changes'), el('dd',null, (c.edits||[]).slice(-5).reverse().map(x=>el('div',null, `${fmtDate(x.at)}, ${x.byName||nameOf(x.by)}: ${x.changes}`)))] : null,
           el('dt',null,'Ranges loaded'), el('dd',null, (c.sourceFiles||[]).map(f=>el('div',null, `${f.name}: ${f.first}–${f.last} (${f.count.toLocaleString()}), ${fmtDate(f.importedAt)}`)))),
         (c.notes||[]).length ? el('div',null, el('h3',null,'Notes from the spreadsheet'), el('ul',{class:'notes'}, c.notes.map(n=>el('li',null,n)))) : null,
         c.closed ? el('div',{class:'row'}, el('span',{class:'spacer'}), el('button',{class:'btn', onclick:()=>openReopenModal(id)},'Reopen category'),
-          el('button',{class:'btn', onclick:async()=>{ const n=prompt('Category name', c.name); if(!n||!n.trim()||n.trim()===c.name) return;
-            try{ await S.db.doc('categories/'+id).update({name:n.trim()}); }catch(e){ toast('Couldn’t rename the category.'); } }},'Rename')) :
+          el('button',{class:'btn', onclick:()=>openEditCategory(id)},'Edit category')) :
         el('div',{class:'row',style:'align-items:flex-end'},
           el('div',{class:'field',style:'max-width:260px'}, el('label',{for:thrId},'Warn when this many are left'),
             el('input',{id:thrId, type:'number', min:0, value:s.threshold})),
           el('button',{class:'btn', onclick:async()=>{ const v=parseInt(document.getElementById(thrId).value,10); if(!(v>=0)){toast('Enter 0 or more.');return;}
             try{ await S.db.doc('categories/'+id).update({lowThreshold:v}); toast('Reminder level saved.'); }catch(e){ toast('Couldn’t save the reminder level.'); } }},'Save'),
           el('span',{class:'spacer'}),
-          el('button',{class:'btn', onclick:async()=>{ const n=prompt('Category name', c.name); if(!n||!n.trim()||n.trim()===c.name) return;
-            try{ await S.db.doc('categories/'+id).update({name:n.trim()}); }catch(e){ toast('Couldn’t rename the category.'); } }},'Rename'),
+          el('button',{class:'btn', onclick:()=>openEditCategory(id)},'Edit category'),
           el('button',{class:'btn '+(c.archived?'':'danger'), onclick:async()=>{
             if (!c.archived && !confirm(`Retire ${c.name}? Secretaries won’t be able to request Doc IDs from it. Its records stay, and you can bring it back later.`)) return;
             try{ await S.db.doc('categories/'+id).update({archived:!c.archived}); }catch(e){ toast('Couldn’t change the category.'); } }}, c.archived?'Bring back':'Retire'),
