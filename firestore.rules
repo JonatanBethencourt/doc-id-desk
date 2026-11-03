@@ -22,7 +22,20 @@ service cloud.firestore {
         && (request.auth.token.email_verified == true
             || get(memberPath()).data.get('uid', '') == request.auth.uid);
     }
-    function isAdmin() { return isMember() && get(memberPath()).data.role == 'admin'; }
+    function memberData() { return get(memberPath()).data; }
+    function setupPath() { return /databases/$(database)/documents/config/setup; }
+    // The person who first set up Doc ID Desk is always a General Administrator.
+    function isSetupOwner() { return exists(setupPath()) && get(setupPath()).data.ownerEmail == myEmail(); }
+
+    // Roles: 'general' (General Administrator, all divisions), 'admin' (administrator of
+    // one division) and 'secretary'. Divisions: 'av' (AV Distribution, also used when
+    // no division is set) and 'comp' (Composition).
+    function isGeneral() { return isMember() && (memberData().role == 'general' || isSetupOwner()); }
+    function isAdmin() { return isMember() && (memberData().role in ['admin', 'general'] || isSetupOwner()); }
+    function myDiv() { return memberData().get('division', 'av'); }
+    function divOf(data) { return data.get('division', 'av'); }
+    function canManageDiv(div) { return isGeneral() || (isAdmin() && myDiv() == div); }
+    function secretaryIn(data, div) { return data.role == 'secretary' && divOf(data) == div; }
 
     // One-time setup: the first person to sign in may make themselves administrator,
     // and only while no one has done so yet.
@@ -33,23 +46,32 @@ service cloud.firestore {
         && request.resource.data.ownerEmail == myEmail();
     }
 
-    // Other settings (document types). Everyone reads; administrators change.
+    // Other settings: document types per division ('app' = AV Distribution,
+    // 'types-comp' = Composition). Everyone reads; each division's administrators change theirs.
     match /config/{doc} {
       allow read: if isMember();
-      allow write: if isAdmin() && doc != 'setup';
+      allow write: if doc != 'setup' && (isGeneral()
+        || (doc == 'app' && canManageDiv('av'))
+        || (doc == 'types-comp' && canManageDiv('comp')));
     }
 
     // People allowed to use the app. Document id = lower-case email address.
+    // Only a General Administrator creates or changes administrators. A division
+    // administrator manages only the secretaries of their own division. Nobody edits themselves.
     match /members/{email} {
       allow get: if authed() && (email == myEmail() || isAdmin());
       allow list: if isAdmin();
-      allow create: if isAdmin()
+      allow create: if isGeneral()
+        || (isAdmin() && secretaryIn(request.resource.data, myDiv()))
         || (signedIn()
             && email == myEmail()
             && request.resource.data.role == 'admin'
             && !exists(/databases/$(database)/documents/config/setup)
             && getAfter(/databases/$(database)/documents/config/setup).data.ownerEmail == myEmail());
-      allow update, delete: if isAdmin() && email != myEmail();
+      allow update: if email != myEmail() && (isGeneral()
+        || (isAdmin() && secretaryIn(resource.data, myDiv()) && secretaryIn(request.resource.data, myDiv())));
+      allow delete: if email != myEmail() && (isGeneral()
+        || (isAdmin() && secretaryIn(resource.data, myDiv())));
     }
 
     // Username → login lookup, so people sign in with a username instead of an email.
@@ -66,10 +88,13 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
-    // Categories and their pools of Doc IDs: administrators only.
+    // Categories: each division's administrators manage their own division's categories.
+    // (Everyone can read all of them, so a Doc ID can never be loaded into two divisions.)
     match /categories/{id} {
       allow read: if isMember();
-      allow write: if isAdmin();
+      allow create: if canManageDiv(divOf(request.resource.data));
+      allow update: if canManageDiv(divOf(resource.data)) && canManageDiv(divOf(request.resource.data));
+      allow delete: if canManageDiv(divOf(resource.data));
     }
     match /pool/{id} {
       allow read: if isMember();

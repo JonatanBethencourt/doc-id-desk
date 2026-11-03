@@ -53,6 +53,8 @@ img{max-width:100%}
 .tab[aria-current="page"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
 .who{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
 .who img{width:26px;height:26px;border-radius:50%}
+.divsel{min-height:32px;width:auto;padding:3px 28px 3px 10px;border-radius:999px;border:1px solid transparent;background-color:var(--accent-soft);color:var(--accent);font-weight:600;font-size:13.5px;cursor:pointer}
+.divname{font-weight:600;color:var(--accent)}
 .role{background:var(--chip);border-radius:999px;padding:2px 9px;font-size:12px;color:var(--ink)}
 
 main{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
@@ -212,7 +214,7 @@ tr.selected td{background:var(--accent-soft)}
 </head>
 <body>
 <header class="top"><div class="top-in">
-  <div class="brand"><b>Doc ID Desk</b><span>Document ID allocation</span></div>
+  <div class="brand"><b>Doc ID Desk</b><span id="divsw">Document ID allocation</span></div>
   <nav class="tabs" id="tabs" aria-label="Sections"></nav>
   <div class="who" id="who"></div>
 </div></header>
@@ -298,10 +300,26 @@ const S = {
   formErr:'', busy:false, busyMsg:'',
   filters:{q:'', catId:'', docType:'', status:'', from:'', to:''}, sel:new Set(), showLimit:200, expanded:new Set(),
   imports:[], range:{target:'new', name:'', first:'', last:'', exclude:'', skipTop:false, notes:'', meps:true, affix:false, prefix:'', suffix:'', source:'range', bankDep:'any', bankQty:'', msg:'', busy:false, done:''}, openCats:new Set(), showAllIds:new Set(),
+  div:'av', myDiv:'av', isGeneral:false,
   d:null,
 };
-const docTypes = (all=false) => {
-  const t = Array.isArray(S.config.app?.docTypes) ? S.config.app.docTypes : DEFAULT_TYPES.map(n=>({name:n, active:true}));
+/* ---------- Divisions ----------
+   Everything without a division belongs to AV Distribution, so data created before
+   divisions existed needs no change. Doc IDs are unique across all divisions. */
+const DIVISIONS = [{id:'av', name:'AV Distribution'}, {id:'comp', name:'Composition'}];
+const divName = id => (DIVISIONS.find(d=>d.id===id) || DIVISIONS[0]).name;
+const validDiv = id => DIVISIONS.some(d=>d.id===id) ? id : 'av';
+const catDiv = c => validDiv(c && c.division);
+const depDiv = d => d && d.division ? validDiv(d.division) : catDiv(S.cats[d && d.sourceCatId]);
+const inDiv = catId => catDiv(S.cats[catId])===S.div;
+const memberDiv = m => validDiv(m && m.division);
+const ownerEmail = () => String(S.config.setup?.ownerEmail||'').toLowerCase();
+const memberRole = (email, m) => (m && m.role==='general') || (email && email===ownerEmail()) ? 'general' : (m && m.role==='admin' ? 'admin' : 'secretary');
+const roleLabel = (role, div) => role==='general' ? 'General Administrator' : `${divName(div)} ${role==='admin'?'administrator':'secretary'}`;
+const typesDocId = div => div==='av' ? 'app' : 'types-'+div;
+const docTypes = (all=false, div=S.div) => {
+  const src = S.config[typesDocId(div)];
+  const t = Array.isArray(src?.docTypes) ? src.docTypes : DEFAULT_TYPES.map(n=>({name:n, active:true}));
   return all ? t : t.filter(x=>x.active!==false);
 };
 
@@ -349,12 +367,15 @@ function derive(){
   return (S.d={pools,stats,records,names});
 }
 const catName = id => id==='bank' ? 'the Doc ID Bank' : (S.cats[id]?.name || 'Unknown category');
+/* For "already in …" messages: name the other division when it isn't the one on screen. */
+const overlapLabel = id => String(id).startsWith('bank:') ? `the ${divName(id.slice(5))} Doc ID Bank`
+  : id==='bank' ? 'the Doc ID Bank' : (inDiv(id) ? catName(id) : `${catName(id)} (${divName(catDiv(S.cats[id]))})`);
 /* "Retired" and "Closed" count only when truly switched on. A value typed by hand
    in the Firebase console, such as the text "false", must not hide a category. */
 const onFlag = v => v===true || String(v??'').trim().toLowerCase()==='true';
 const normCat = c => c ? {...c, archived:onFlag(c.archived), closed:onFlag(c.closed)} : c;
-const activeCats = () => Object.entries(S.cats).filter(([,c])=>!c.archived && !c.closed).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
-const openCats = () => Object.entries(S.cats).filter(([,c])=>!c.closed).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
+const activeCats = () => Object.entries(S.cats).filter(([,c])=>catDiv(c)===S.div && !c.archived && !c.closed).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
+const openCats = () => Object.entries(S.cats).filter(([,c])=>catDiv(c)===S.div && !c.closed).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
 const levelLabel = (c,s) => c.closed ? 'Closed' : c.archived ? 'Retired' : s.level==='ok' ? 'Healthy' : s.level==='low' ? 'Running low' : 'Empty';
 const levelClass = (c,s) => c.closed || c.archived ? '' : s.level;
 const cmpId = (a,b) => String(a).localeCompare(String(b), undefined, {numeric:true});
@@ -363,21 +384,22 @@ const depGroup = d => (d.sourceCatId||'')+'|'+(d.releasedAt||'');
 /* One entry per closing (a closing may be stored in several documents). */
 function bankGroups(){
   const g=new Map();
-  for (const d of Object.values(S.bank)){ const k=depGroup(d); if (!(d.regs||[]).length) continue;
+  for (const d of Object.values(S.bank)){ const k=depGroup(d); if (!(d.regs||[]).length || depDiv(d)!==S.div) continue;
     if (!g.has(k)) g.set(k,{key:k, sourceName:d.sourceName, releasedAt:d.releasedAt, releasedBy:d.releasedBy, releasedByName:d.releasedByName, regs:[]});
     for (const r of d.regs) g.get(k).regs.push(String(r)); }
   return [...g.values()].map(x=>({...x, regs:x.regs.sort(cmpId)})).sort((a,b)=>String(b.releasedAt||'').localeCompare(String(a.releasedAt||'')));
 }
-function bankEntries(depFilter){
+function bankEntries(depFilter, div=S.div){
   const out=[];
   for (const [id,d] of Object.entries(S.bank)){
+    if (div && depDiv(d)!==div) continue;
     if (depFilter && depFilter!=='any' && depGroup(d)!==depFilter) continue;
     const r=d.regs||[], m=d.meps||[];
     for (let i=0;i<r.length;i++) out.push({reg:String(r[i]), meps:m[i]||'', dep:id});
   }
   return out.sort((a,b)=>cmpId(a.reg,b.reg));
 }
-const allCats = () => Object.entries(S.cats).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
+const allCats = () => Object.entries(S.cats).filter(([,c])=>catDiv(c)===S.div).sort((a,b)=>a[1].name.localeCompare(b[1].name, undefined, {numeric:true}));
 
 /* ---------- People ---------- */
 const myName = () => S.me.name || S.me.email;
@@ -512,7 +534,7 @@ async function releaseRecords(refs, reason){
       if (!freed.length) return 0;
       if (c.closed){
         const part=freed.map(i=>pool[i]).filter(Boolean);
-        tx.set(S.db.doc('bank/'+catId+'__b'+rid()), {sourceCatId:catId, sourceName:c.name, regs:part.map(x=>String(x[0])), meps:part.map(x=>x[1]||''),
+        tx.set(S.db.doc('bank/'+catId+'__b'+rid()), {sourceCatId:catId, sourceName:c.name, division:catDiv(c), regs:part.map(x=>String(x[0])), meps:part.map(x=>x[1]||''),
           count:part.length, releasedAt:at, releasedBy:S.uid, releasedByName:myName()});
       } else {
         const ad=a.exists?a.data():{next:0};
@@ -546,7 +568,7 @@ async function closeCategory(catId){
     const released=[...back.sort((x,y)=>x-y).map(i=>pool[i]), ...pool.slice(next)]; const at=nowIso();
     for (let i=0;i<released.length;i+=POOL_CHUNK){
       const part=released.slice(i,i+POOL_CHUNK);
-      tx.set(S.db.doc('bank/'+catId+'__b'+rid()), {sourceCatId:catId, sourceName:c.name, regs:part.map(x=>String(x[0])), meps:part.map(x=>x[1]||''),
+      tx.set(S.db.doc('bank/'+catId+'__b'+rid()), {sourceCatId:catId, sourceName:c.name, division:catDiv(c), regs:part.map(x=>String(x[0])), meps:part.map(x=>x[1]||''),
         count:part.length, releasedAt:at, releasedBy:S.uid, releasedByName:myName()});
     }
     tx.set(allocRef, {next:pool.length, returned:[], updatedAt:at, updatedBy:S.uid});   // the pointer can only move forward, so nothing here can be handed out again
@@ -585,6 +607,7 @@ function openEditCategory(id){
   const suf=el('input',{id:'ec-s', type:'text', autocomplete:'off', spellcheck:'false', placeholder:'e.g. -E'}); suf.value=mepsCodesIn(c.mepsSuffix);
   const notes=el('textarea',{id:'ec-no'}); notes.value=(c.notes||[]).join('\n');
   const thr=el('input',{id:'ec-t', type:'number', min:0}); thr.value= c.closed ? '' : s.threshold;
+  const dv=el('select',{id:'ec-d'}, DIVISIONS.map(d=>opt(d.id, d.name, d.id===catDiv(c))));
   const prev=el('span',{class:'hint'}); const err=el('p',{class:'err-text', role:'alert'});
   const nextE = pool && !c.closed ? pool.arr[s.nextIdx ?? s.next] : null;
   const upd=()=>{ const on=mp.checked; pre.disabled=suf.disabled=!on;
@@ -605,6 +628,8 @@ function openEditCategory(id){
       prev,
       el('div',{class:'field'}, el('label',{for:'ec-no'},'Notes (one per line)'), notes),
       c.closed ? null : el('div',{class:'field',style:'max-width:240px'}, el('label',{for:'ec-t'},'Warn when this many are left'), thr),
+      S.isGeneral ? el('div',{class:'field',style:'max-width:280px'}, el('label',{for:'ec-d'},'Division'), dv,
+        el('span',{class:'hint'},'Moving a category moves its records and remaining Doc IDs with it.')) : null,
       err),
     el('footer',null, el('button',{class:'btn', onclick:close},'Cancel'), saveB));
   root.replaceChildren(el('div',{class:'overlay', onclick:e=>{ if(e.target===e.currentTarget) close(); }}, dlg));
@@ -625,14 +650,17 @@ function openEditCategory(id){
     if (toMeps(sx)!==toMeps(c.mepsSuffix||'')) ch.push(`MEPS suffix “${c.mepsSuffix||''}” → “${sx}”`);
     if (nl.join('\n')!==(c.notes||[]).join('\n')) ch.push('notes changed');
     if (!c.closed && t!==s.threshold) ch.push(`warning level → ${t}`);
+    const nd = S.isGeneral ? dv.value : catDiv(c);
+    if (nd!==catDiv(c)) ch.push(`division ${divName(catDiv(c))} → ${divName(nd)}`);
     if (!ch.length){ close(); return; }
     const mepsChanged = hasMeps!==!!c.hasMeps || toMeps(p)!==toMeps(c.mepsPrefix||'') || toMeps(sx)!==toMeps(c.mepsSuffix||'');
     const at=nowIso();
     const patch={name, notes:nl, hasMeps, mepsPrefix:p, mepsSuffix:sx, edits:[...(c.edits||[]), {at, by:S.uid, byName:myName(), changes:ch.join('; ')}]};
     if (mepsChanged) patch.mepsCustom=true;
+    if (nd!==catDiv(c)) patch.division=nd;
     if (!c.closed) patch.lowThreshold=t;
     saveB.disabled=true;
-    try { await S.db.doc('categories/'+id).update(patch); close(); toast('Category saved.'); }
+    try { await S.db.doc('categories/'+id).update(patch); close(); toast(nd!==catDiv(c) ? `Category moved to ${divName(nd)}.` : 'Category saved.'); }
     catch(x){ err.textContent='The changes couldn’t be saved. Try again.'; saveB.disabled=false; }
   }
 }
@@ -701,7 +729,7 @@ async function withdrawFromBank(R, pick){
     const chunks=[];
     for (let i=0;i<ids.length;i+=POOL_CHUNK){ const id=catId+'__p'+rid(); const part=ids.slice(i,i+POOL_CHUNK);
       tx.set(S.db.doc('pool/'+id), {catId, regs:part.map(x=>x[0]), meps:part.map(x=>x[1])}); chunks.push({id, count:part.length}); }
-    if (isNew) tx.set(S.db.doc('categories/'+catId), {name, sourceFiles:[source], notes, hasMeps:!!R.meps, headerRegular:'Regular Numbers', headerMeps:'MEPS Numbers',
+    if (isNew) tx.set(S.db.doc('categories/'+catId), {name, division:S.div, sourceFiles:[source], notes, hasMeps:!!R.meps, headerRegular:'Regular Numbers', headerMeps:'MEPS Numbers',
       total:ids.length, chunks, createdAt:at, createdBy:S.uid, lowThreshold:null, archived:false, mepsPrefix:pick.mepsPrefix, mepsSuffix:pick.mepsSuffix});
     else tx.update(S.db.doc('categories/'+catId), {total:(c.total||0)+ids.length, chunks:[...(c.chunks||[]), ...chunks], sourceFiles:[...(c.sourceFiles||[]), source],
       hasMeps:!!(c.hasMeps||R.meps), mepsPrefix:pick.mepsPrefix, mepsSuffix:pick.mepsSuffix});
@@ -777,7 +805,7 @@ function checkOverlap(parsed){
     const c=S.cats[cid]; const upto = c && c.closed ? (c.closedNext||0) : p.arr.length;
     for (let i=0;i<upto;i++) owner.set(String(p.arr[i][0]), cid);
   }
-  for (const d of Object.values(S.bank)) for (const r of d.regs||[]) owner.set(String(r), 'bank');
+  for (const d of Object.values(S.bank)){ const k = depDiv(d)===S.div ? 'bank' : 'bank:'+depDiv(d); for (const r of d.regs||[]) owner.set(String(r), k); }
   const hits={};
   for (const row of parsed.rows){ row.overlap = owner.get(row.reg) || null; if (row.overlap) hits[row.overlap]=(hits[row.overlap]||0)+1; }
   parsed.overlapByCat = hits;
@@ -813,7 +841,7 @@ async function runImport(imp){
     const {chunks, docs} = makeChunks(catId);
     const batch = S.db.batch();
     for (const [id,d] of docs) batch.set(S.db.doc('pool/'+id), d);
-    batch.set(S.db.doc('categories/'+catId), {name, sourceFiles:[source], notes:p.notes, hasMeps:p.hasMeps, headerRegular:p.headerRegular,
+    batch.set(S.db.doc('categories/'+catId), {name, division:S.div, sourceFiles:[source], notes:p.notes, hasMeps:p.hasMeps, headerRegular:p.headerRegular,
       headerMeps:p.headerMeps, total:ids.length, chunks, createdAt:at, createdBy:S.uid, lowThreshold:null, archived:false,
       mepsPrefix:p.mepsPrefix||'', mepsSuffix:p.mepsSuffix||''});
     await batch.commit();
@@ -910,11 +938,23 @@ function renderTabs(){
   const items=[['request','Request'],['records','Records']]; if (S.isAdmin) items.push(['admin','Admin']);
   t.replaceChildren(...items.map(([v,l])=>el('button',{class:'tab', 'aria-current':S.view===v?'page':null, onclick:()=>go(v)}, l)));
 }
+function switchDiv(id){
+  if (!S.isGeneral || !DIVISIONS.some(d=>d.id===id) || id===S.div) return;
+  S.div=id; try{ localStorage.setItem('docid-div', id); }catch(e){}
+  S.form.catId=''; S.sel.clear(); S.expanded.clear(); S.filters={q:'',catId:'',docType:'',status:'',from:'',to:''};
+  S.range={...S.range, target:'new', source:'range', bankDep:'any', msg:'', done:''}; S.imports=[]; S.openCats.clear(); S.formErr='';
+  invalidate(); window.scrollTo(0,0); render(); toast(`Now working in ${divName(id)}.`);
+}
 function renderWho(){
-  const w=document.getElementById('who');
+  const w=document.getElementById('who'); const sw=document.getElementById('divsw');
+  if (S.phase==='app'){
+    sw.replaceChildren(S.isGeneral
+      ? el('select',{class:'divsel', 'aria-label':'Division', onchange:e=>switchDiv(e.target.value)}, DIVISIONS.map(d=>opt(d.id, d.name, d.id===S.div)))
+      : el('span',{class:'divname'}, divName(S.div)));
+  } else sw.textContent='Document ID allocation';
   if (!S.auth || !S.auth.currentUser){ w.replaceChildren(); return; }
   w.replaceChildren(...[el('span',null, S.me.name || S.me.email),
-    S.phase==='app' ? el('span',{class:'role'}, S.isAdmin?'Administrator':'Secretary') : null,
+    S.phase==='app' ? el('span',{class:'role'}, roleLabel(S.isGeneral?'general':(S.isAdmin?'admin':'secretary'), S.myDiv)) : null,
     S.phase==='app' && hasPasswordLogin() ? el('button',{class:'btn ghost', style:'min-height:32px;padding:4px 10px', onclick:openPasswordModal}, 'Change password') : null,
     el('button',{class:'btn ghost', style:'min-height:32px;padding:4px 10px', onclick:()=>S.auth.signOut()}, 'Sign out')].filter(Boolean));
 }
@@ -1035,7 +1075,7 @@ async function claimSetup(){
 function requestView(){
   const {stats, pools}=derive();
   const cats=activeCats();
-  const hidden=Object.values(S.cats);
+  const hidden=Object.values(S.cats).filter(c=>catDiv(c)===S.div);
   if (!cats.length && hidden.length) return el('div',{class:'card empty-state'}, el('h2',null,'No categories are open for requests'),
     el('p',null, `${plural(hidden.length,'category','categories')} exist, but ${hidden.length===1?'it is':'they are all'} retired or closed: `,
       hidden.map(c=>`${c.name} (${c.closed?'closed':'retired'})`).join(', '), '.'),
@@ -1045,13 +1085,13 @@ function requestView(){
     el('p',null, S.isAdmin ? 'Add a range of Doc IDs to create the first category.' : 'An administrator needs to upload a spreadsheet of Doc IDs first.'),
     S.isAdmin ? el('button',{class:'btn primary', onclick:()=>{S.adminTab='range'; go('admin');}}, 'Add a range') : null);
   const f=S.form;
-  if (!f.catId || !S.cats[f.catId] || S.cats[f.catId].archived || S.cats[f.catId].closed){ const firstOk = cats.find(([id])=>stats[id]?.remaining>0) || cats[0]; f.catId = firstOk[0]; }
+  if (!f.catId || !S.cats[f.catId] || S.cats[f.catId].archived || S.cats[f.catId].closed || !inDiv(f.catId)){ const firstOk = cats.find(([id])=>stats[id]?.remaining>0) || cats[0]; f.catId = firstOk[0]; }
   const cat=S.cats[f.catId], st=stats[f.catId];
   if (!cat.hasMeps && f.format==='meps') f.format='regular';
   const types=docTypes();
   f.lines.forEach(l=>{ if (!l.type || !types.some(t=>t.name===l.type)) l.type = types[0]?.name || ''; });
   const total=f.lines.reduce((a,l)=>a+(parseInt(l.qty,10)||0),0);
-  const prior = f.mnemonic.trim() ? derive().records.filter(r=>r.mnemonic.toLowerCase()===f.mnemonic.trim().toLowerCase() && r.status!=='Cancelled').length : 0;
+  const prior = f.mnemonic.trim() ? derive().records.filter(r=>inDiv(r.catId) && r.mnemonic.toLowerCase()===f.mnemonic.trim().toLowerCase() && r.status!=='Cancelled').length : 0;
 
   const form = el('form',{class:'card stack', novalidate:true, onsubmit:e=>{e.preventDefault(); submitRequest();}},
     el('div',null, el('h1',null,'Request Doc IDs'), el('p',{class:'lede',style:'margin:0'},'Get the next free Doc IDs for a project. Each one is recorded against the project the moment it’s handed out.')),
@@ -1119,7 +1159,7 @@ function groupsOf(records){
   return [...g.values()].map(list=>list.sort((a,b)=>a.idx-b.idx));
 }
 function pendingPanel(){
-  const mine = derive().records.filter(r=>r.status==='Reserved' && r.reservedBy===S.uid);
+  const mine = derive().records.filter(r=>r.status==='Reserved' && r.reservedBy===S.uid && inDiv(r.catId));
   if (!mine.length) return null;
   return el('section',{class:'card stack'},
     el('div',null, el('h2',{style:'margin:0'},'Reserved for you'), el('p',{class:'hint',style:'margin:4px 0 0'},'These Doc IDs are held for you until you click Done. Open them to copy them again and confirm.')),
@@ -1240,6 +1280,7 @@ function filteredRecords(){
   const from = F.from ? new Date(F.from+'T00:00:00').toISOString() : '';
   const to = F.to ? new Date(F.to+'T23:59:59.999').toISOString() : '';
   return derive().records.filter(r=>{
+    if (!inDiv(r.catId)) return false;
     if (F.catId && r.catId!==F.catId) return false;
     if (F.docType && r.docType!==F.docType) return false;
     if (F.status && r.status!==F.status) return false;
@@ -1259,19 +1300,19 @@ function lookupUnassigned(q){
     const c=S.cats[cid]; if (c && c.closed && i>=(c.closedNext||0)) continue;   // released to the bank
     return {catId:cid, idx:i, free: i>=stats[cid].next || stats[cid].returned.includes(i)};
   }
-  const b = bankEntries().find(e=>e.reg===q);
-  if (b) return {bank:true, reg:q, from:S.bank[b.dep]?.sourceName||''};
+  const b = bankEntries('any', null).find(e=>e.reg===q);
+  if (b) return {bank:true, reg:q, from:S.bank[b.dep]?.sourceName||'', div:depDiv(S.bank[b.dep])};
   return {none:true};
 }
 function recordsView(){
   const F=S.filters; const list=filteredRecords();
-  const types=[...new Set([...docTypes(true).map(t=>t.name), ...derive().records.map(r=>r.docType)])];
+  const types=[...new Set([...docTypes(true).map(t=>t.name), ...derive().records.filter(r=>inDiv(r.catId)).map(r=>r.docType)])];
   const shown=list.slice(0,S.showLimit);
   const setF=(k,v)=>{ F[k]=v; S.showLimit=200; render(); };
   let qT=0;
   const lookup = F.q && !list.length ? lookupUnassigned(F.q) : null;
   const keyOf = r => r.catId+':'+rk(r);
-  const allRecs = derive().records;
+  const allRecs = derive().records.filter(r=>inDiv(r.catId));
   for (const k of [...S.sel]) if (!allRecs.some(r=>keyOf(r)===k)) S.sel.delete(k);   // drop anything that no longer exists
   const selCount = S.sel.size;
   const inView = list.filter(r=>S.sel.has(keyOf(r))).length;
@@ -1305,8 +1346,8 @@ function recordsView(){
     : (list.length ? el('p',{class:'hint',style:'margin:0'}, 'Tick the boxes on the left to choose specific records to export.') : null),
     el('p',{class:'hint',style:'margin:0'}, list.length ? `Showing ${shown.length.toLocaleString()} of ${plural(list.length,'record')}.` : ''),
     lookup ? lookupNode(lookup) : null,
-    !list.length && !lookup ? el('div',{class:'card empty-state'}, el('h2',null, derive().records.length?'No records match':'No Doc IDs handed out yet'),
-      el('p',null, derive().records.length ? 'Try a different search or clear the filters.' : 'Records appear here as soon as someone requests Doc IDs.')) : null,
+    !list.length && !lookup ? el('div',{class:'card empty-state'}, el('h2',null, allRecs.length?'No records match':'No Doc IDs handed out yet'),
+      el('p',null, allRecs.length ? 'Try a different search or clear the filters.' : 'Records appear here as soon as someone requests Doc IDs.')) : null,
     list.length ? el('div',{class:'scroll'}, el('table',null,
       el('thead',null, el('tr',null, el('th',{class:'pick', scope:'col'}, headBox), ['Doc ID','Project','Category','Document type','Status','Assigned','By'].map(h=>el('th',{scope:'col'},h)))),
       el('tbody',null, shown.map(recordRows)))) : null,
@@ -1314,9 +1355,9 @@ function recordsView(){
 }
 function lookupNode(l){
   if (l.none) return el('div',{class:'card'}, el('p',{style:'margin:0'}, `${S.filters.q.trim()} isn’t in any Doc ID category.`));
-  if (l.bank) return el('div',{class:'card'}, el('p',{style:'margin:0'}, el('b',{class:'num'}, l.reg), ` is in the Doc ID Bank${l.from?` (from ${l.from})`:''}. It has never been handed out and can be added to a category.`));
+  if (l.bank) return el('div',{class:'card'}, el('p',{style:'margin:0'}, el('b',{class:'num'}, l.reg), ` is in the ${l.div!==S.div?divName(l.div)+' ':''}Doc ID Bank${l.from?` (from ${l.from})`:''}. It has never been handed out and can be added to a category.`));
   const {pools}=derive(); const e=pools[l.catId].arr[l.idx];
-  return el('div',{class:'card'}, el('p',{style:'margin:0'}, el('b',{class:'num'}, String(e[0])), ` is in ${catName(l.catId)} and `,
+  return el('div',{class:'card'}, el('p',{style:'margin:0'}, el('b',{class:'num'}, String(e[0])), ` is in ${overlapLabel(l.catId)} and `,
     l.free ? 'hasn’t been handed out yet.' : 'was issued but has no record. Ask an administrator to check it.'));
 }
 function recordRows(r){
@@ -1351,13 +1392,13 @@ async function exportRecords(list, kind){
   const stamp=new Date().toISOString().slice(0,10);
   if (kind==='csv'){
     const csv='\uFEFF'+[header,...rows].map(row=>row.map(v=>{ const s=String(v??''); return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }).join(',')).join('\r\n');
-    return save(`doc-id-records-${stamp}.csv`, csv);
+    return save(`doc-id-records-${slug(divName(S.div))}-${stamp}.csv`, csv);
   }
   const ws=XLSX.utils.aoa_to_sheet([header,...rows]); ws['!cols']=header.map((h,i)=>({wch:[14,16,14,9,16,26,18,11,30,20,18,20,18,20,18,40][i]}));
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Doc ID records');
   const note=XLSX.utils.aoa_to_sheet([['About this export'],['The "Doc ID (MEPS characters)" column holds the original MEPS characters. Set that column to the MEPS Bookman Universal font to see them as they appear in your documents.'],[`Exported ${fmtDate(nowIso())}`]]);
   XLSX.utils.book_append_sheet(wb, note, 'Notes');
-  return save(`doc-id-records-${stamp}.xlsx`, new Uint8Array(XLSX.write(wb,{bookType:'xlsx', type:'array'})));
+  return save(`doc-id-records-${slug(divName(S.div))}-${stamp}.xlsx`, new Uint8Array(XLSX.write(wb,{bookType:'xlsx', type:'array'})));
 }
 async function save(filename, data){
   const type = filename.endsWith('.csv') ? 'text/csv;charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -1422,7 +1463,7 @@ function openEditModal(r){
 function adminView(){
   const tabs=[['categories','Categories'],['range','Add a range'],['bank','Doc ID Bank'],['upload','Upload spreadsheets'],['pending','Reserved'],['reports','Utilization'],['types','Document types'],['people','People']];
   const body = {categories:adminCategories, range:adminRange, bank:adminBank, upload:adminUpload, pending:adminPending, reports:adminReports, types:adminTypes, people:adminPeople}[S.adminTab]();
-  return el('div',null, el('h1',null,'Administration'), el('p',{class:'lede'},'Create categories from a range of Doc IDs, add new ranges, and review how Doc IDs are being used.'),
+  return el('div',null, el('h1',null,'Administration'), el('p',{class:'lede'}, 'Managing ', el('span',{class:'divname'}, divName(S.div)), '. Create categories from a range of Doc IDs, add new ranges, and review how Doc IDs are being used.'),
     el('div',{class:'subtabs', role:'tablist'}, tabs.map(([k,l])=>el('button',{class:'subtab', role:'tab', 'aria-current':S.adminTab===k?'page':null, onclick:()=>{S.adminTab=k; render();}}, l))),
     body);
 }
@@ -1529,7 +1570,7 @@ function stat(n,l){ return el('div',{class:'stat'}, el('b',{class:'num'}, Number
 
 function adminRange(){
   const R=S.range;
-  if (R.target!=='new' && (!S.cats[R.target] || S.cats[R.target].closed)) R.target='new';
+  if (R.target!=='new' && (!S.cats[R.target] || S.cats[R.target].closed || !inDiv(R.target))) R.target='new';
   const bankTotal = bankEntries().length;
   if (R.source==='bank' && !bankTotal) R.source='range';
   if (R.bankDep!=='any' && !bankGroups().some(g=>g.key===R.bankDep)) R.bankDep='any';
@@ -1593,7 +1634,7 @@ function adminRange(){
          R.meps && fresh[0] ? el('div',{class:'field'}, el('span',{class:'legend'},'First MEPS number'),
            el('div',{class:'num',style:'font-size:20px;font-weight:600'}, mepsDigits(fresh[0].meps)),
            el('span',{class:'hint'}, R.affix && (R.prefix||R.suffix) ? 'Digits, including any in the prefix or suffix, are created in MEPS Bookman Universal characters. Letters and symbols are kept exactly as typed.' : 'Created in MEPS Bookman Universal characters, the same as in your spreadsheets.')) : null,
-         overl.length ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${overl.map(([cid,n])=>`${n.toLocaleString()} already in ${catName(cid)}`).join(', ')}. Those Doc IDs will be skipped so nothing can be handed out twice.`,
+         overl.length ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${overl.map(([cid,n])=>`${n.toLocaleString()} already in ${overlapLabel(cid)}`).join(', ')}. Those Doc IDs will be skipped so nothing can be handed out twice.`,
            p.overlapByCat && p.overlapByCat.bank ? ' To use the ones in the Doc ID Bank, choose “The Doc ID Bank” at the top.' : '')) : null],
         R.msg ? el('p',{class:'err-text', role:'alert'}, R.msg) : null,
         R.done ? el('div',{class:'banner info'}, el('span',{class:'ico'}, el('i',null,'✓')), el('p',null,R.done)) : null,
@@ -1643,7 +1684,7 @@ function importCard(imp){
       el('dt',null,'Range'), el('dd',{class:'num'}, `${p.rows[0].reg} – ${p.rows[p.rows.length-1].reg}`),
       el('dt',null,'Formats'), el('dd',null, p.hasMeps ? `${p.headerRegular} and ${p.headerMeps}` : `${p.headerRegular} only`),
       p.notes.length ? [el('dt',null,'Notes'), el('dd',null, p.notes.join(' · '))] : null),
-    overl.length ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${overl.map(([cid,n])=>`${n.toLocaleString()} already in ${catName(cid)}`).join(', ')}. Those Doc IDs will be skipped so nothing can be handed out twice.`)) : null,
+    overl.length ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${overl.map(([cid,n])=>`${n.toLocaleString()} already in ${overlapLabel(cid)}`).join(', ')}. Those Doc IDs will be skipped so nothing can be handed out twice.`)) : null,
     dups ? el('p',{class:'hint'}, `${plural(dups,'Doc ID')} appear twice in this file; only the first copy is kept.`) : null,
     mism ? el('div',{class:'banner low'}, el('span',{class:'ico'}, el('i',null,'!')), el('p',null, `${plural(mism,'row')}: the MEPS number doesn’t match the regular number. Check the file before importing.`)) : null,
     nomeps ? el('p',{class:'hint'}, `${plural(nomeps,'row')} have no MEPS number.`) : null,
@@ -1665,7 +1706,7 @@ function importCard(imp){
     : el('p',{class:'hint'},'Every Doc ID in this file is already in the system, so there is nothing to import.'));
 }
 function adminPending(){
-  const all=derive().records.filter(r=>r.status==='Reserved');
+  const all=derive().records.filter(r=>r.status==='Reserved' && inDiv(r.catId));
   if (!all.length) return el('div',{class:'card empty-state'}, el('h2',null,'Nothing is reserved'), el('p',null,'Doc IDs show up here when someone gets them but hasn’t clicked Done yet, or keeps them reserved for later.'));
   return el('div',{class:'stack'},
     el('p',{class:'hint',style:'margin:0;max-width:80ch'},'These Doc IDs are reserved: handed out, but Done hasn’t been clicked. Mark them as used if they went into a document. Release them back to the range if they were never used, so they can be handed out again. Cancel them only if they may have been used somewhere; cancelled Doc IDs are never reused.'),
@@ -1684,12 +1725,14 @@ function adminPending(){
             el('button',{class:'btn danger', onclick:async()=>{ if(!confirm('Cancel these Doc IDs? They will never be given out again.')) return; try{ await setStatus(refs,'Cancelled','Cancelled','Cancelled by administrator'); toast('Cancelled.'); }catch(e){ toast('Couldn’t cancel. Try again.'); } }},'Cancel')))); })))));
 }
 function adminReports(){
-  const {stats,records}=derive(); const cats=allCats();
+  const {stats}=derive(); const records=derive().records.filter(r=>inDiv(r.catId)); const cats=allCats();
   const tot=cats.reduce((a,[id])=>{ const s=stats[id]; a.total+=s.total; a.used+=s.Assigned||0; a.res+=s.Reserved||0; a.can+=s.Cancelled||0; a.left+=s.remaining; return a; },{total:0,used:0,res:0,can:0,left:0});
   const types={}; for (const r of records){ const t=types[r.docType] ||= {Assigned:0,Reserved:0,Cancelled:0,Released:0}; t[r.status]=(t[r.status]||0)+1; }
   const months={}; for (const r of records){ if (r.status==='Cancelled' || r.status==='Released') continue; const m=String(r.reservedAt).slice(0,7); months[m]=(months[m]||0)+1; }
   const pct=(a,b)=>b?Math.round(a/b*100)+'%':'—';
   return el('div',{class:'stack'},
+    S.isGeneral ? divisionsOverview() : null,
+    S.isGeneral ? el('h2',{style:'margin:8px 0 0'}, divName(S.div)) : null,
     el('div',{class:'card'}, el('div',{class:'stats'}, stat(tot.total,'Doc IDs loaded'), stat(tot.used,'used'), stat(tot.res,'waiting for Done'), stat(tot.can,'cancelled'), stat(tot.left,'left'),
       el('div',{class:'stat'}, el('b',null,pct(tot.used+tot.res+tot.can,tot.total)), el('span',null,'issued')), stat(bankEntries().length,'in the Doc ID Bank'))),
     el('div',{class:'row'}, el('h2',{style:'margin:0'},'By category'), el('span',{class:'spacer'}), S.downloads ? el('button',{class:'btn', onclick:exportReport},'Export report to Excel') : null),
@@ -1703,9 +1746,20 @@ function adminReports(){
     Object.keys(months).length ? el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, el('th',null,'Month'), el('th',null,'Doc IDs (excluding cancelled)'))),
       el('tbody',null, Object.entries(months).sort().reverse().map(([m,n])=>el('tr',null, el('td',null, new Date(m+'-01T12:00:00').toLocaleDateString(undefined,{year:'numeric',month:'long'})), el('td',{class:'num'},n)))))) : null);
 }
+function divisionsOverview(){
+  const {stats}=derive();
+  const rows=DIVISIONS.map(d=>{ const t={cats:0,total:0,used:0,res:0,can:0,left:0};
+    for (const [id,c] of Object.entries(S.cats)){ if (catDiv(c)!==d.id) continue; const s=stats[id]; t.cats++; t.total+=s.total; t.used+=s.Assigned||0; t.res+=s.Reserved||0; t.can+=s.Cancelled||0; t.left+=s.remaining; }
+    t.bank=bankEntries('any', d.id).length; return [d,t]; });
+  return el('div',{class:'stack',style:'gap:10px'}, el('h2',{style:'margin:0'},'All divisions'),
+    el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, ['Division','Categories','Doc IDs loaded','Used','Waiting','Cancelled','Left','In the Doc ID Bank'].map(h=>el('th',null,h)))),
+      el('tbody',null, rows.map(([d,t])=>el('tr',{class:'clickable', onclick:()=>switchDiv(d.id)}, el('td',null, el('b',null,d.name)),
+        ...[t.cats,t.total,t.used,t.res,t.can,t.left,t.bank].map(n=>el('td',{class:'num'},n.toLocaleString()))))))),
+    el('p',{class:'hint',style:'margin:0'},'Doc IDs are unique across all divisions. Click a division to switch to it.'));
+}
 async function exportReport(){
   if (!window.XLSX){ toast('The Excel exporter didn’t load. Reload the page and try again.'); return; }
-  const {stats,records}=derive(); const wb=XLSX.utils.book_new();
+  const {stats}=derive(); const records=derive().records.filter(r=>inDiv(r.catId)); const wb=XLSX.utils.book_new();
   const cat=[['Category','Total','Used','Waiting for Done','Cancelled','Left','Issued %','Reminder level','Status']];
   for (const [id,c] of allCats()){ const s=stats[id]; cat.push([c.name,s.total,s.Assigned||0,s.Reserved||0,s.Cancelled||0,s.remaining, s.total?Math.round(s.issued/s.total*1000)/10:0, s.threshold, levelLabel(c,s)]); }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(cat), 'By category');
@@ -1715,15 +1769,16 @@ async function exportReport(){
   const pm={}; for (const r of records){ const k=String(r.reservedAt).slice(0,7)+'|'+r.catId; pm[k]=(pm[k]||0)+(r.status==='Cancelled'?0:1); }
   const mm=[['Month','Category','Doc IDs handed out (excluding cancelled)']]; for (const [k,n] of Object.entries(pm).sort()){ const [m,cid]=k.split('|'); mm.push([m,catName(cid),n]); }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(mm), 'By month');
-  await save(`doc-id-utilization-${new Date().toISOString().slice(0,10)}.xlsx`, new Uint8Array(XLSX.write(wb,{bookType:'xlsx',type:'array'})));
+  await save(`doc-id-utilization-${slug(divName(S.div))}-${new Date().toISOString().slice(0,10)}.xlsx`, new Uint8Array(XLSX.write(wb,{bookType:'xlsx',type:'array'})));
 }
 function adminTypes(){
   const list=docTypes(true).map(t=>({...t}));
-  const persist=async(next)=>{ try{ await S.db.doc('config/app').set({...(S.config.app||{}), docTypes:next}); toast('Document types saved.'); }catch(e){ toast('Couldn’t save document types.'); } };
+  const tid=typesDocId(S.div);
+  const persist=async(next)=>{ try{ await S.db.doc('config/'+tid).set({...(S.config[tid]||{}), docTypes:next}); toast('Document types saved.'); }catch(e){ toast('Couldn’t save document types.'); } };
   const addIn=el('input',{id:'t-new',type:'text',placeholder:'e.g. Narration Script'});
   const add=()=>{ const n=addIn.value.trim(); if(!n) return; if(list.some(t=>t.name.toLowerCase()===n.toLowerCase())){ toast('That document type already exists.'); return; } persist([...list,{name:n,active:true}]); };
   return el('div',{class:'stack'},
-    el('p',{class:'hint',style:'margin:0'},'These appear in the Document type list when someone requests Doc IDs. Hiding a type keeps it on existing records.'),
+    el('p',{class:'hint',style:'margin:0'},`These appear in the Document type list when someone in ${divName(S.div)} requests Doc IDs. Hiding a type keeps it on existing records.`),
     el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, el('th',null,'Document type'), el('th',null,'Shown to secretaries'), el('th',null,''))),
       el('tbody',null, list.map((t,i)=>el('tr',null, el('td',null,t.name),
         el('td',null, t.active!==false ? el('span',{class:'chip ok'},'Shown') : el('span',{class:'chip'},'Hidden')),
@@ -1764,11 +1819,32 @@ async function createLogin(email, pw, name){
     throw new AppError('The login couldn’t be created. Try again.');
   }
 }
+/* Roles are chosen as one value: 'general', or '<division>:admin' / '<division>:secretary'. */
+const roleValue = (email, m) => memberRole(email, m)==='general' ? 'general' : `${memberDiv(m)}:${memberRole(email, m)}`;
+const roleFields = v => v==='general' ? {role:'general'} : {role:v.split(':')[1], division:v.split(':')[0]};
+const roleValueLabel = v => v==='general' ? 'General Administrator' : roleLabel(v.split(':')[1], v.split(':')[0]);
+function roleChoices(){
+  if (!S.isGeneral) return [`${S.myDiv}:secretary`];
+  return [...DIVISIONS.flatMap(d=>[`${d.id}:secretary`, `${d.id}:admin`]), 'general'];
+}
+/* What the viewer may do with a person: General Administrators manage everyone (except
+   themselves and the person who set up Doc ID Desk); a division administrator manages
+   only the secretaries of their own division. The database rules enforce the same. */
+function canManagePerson(email, m){
+  if (email===S.uid) return false;
+  if (S.isGeneral) return email!==ownerEmail();
+  return memberRole(email, m)==='secretary' && memberDiv(m)===S.myDiv;
+}
 function adminPeople(){
-  const P=S.people; const list=Object.entries(S.members).sort((a,b)=>String(a[1].name||a[0]).localeCompare(String(b[1].name||b[0])));
+  const P=S.people;
+  if (!P.roleV || !roleChoices().includes(P.roleV)) P.roleV = `${S.isGeneral ? S.div : S.myDiv}:secretary`;
+  const visible = Object.entries(S.members).filter(([e,m]) => S.isGeneral || memberRole(e,m)==='general' || memberDiv(m)===S.myDiv);
+  const order = (e,m) => { const r=memberRole(e,m); return (r==='general'?'0':'1'+memberDiv(m)+(r==='admin'?'0':'1'))+String(m.name||e).toLowerCase(); };
+  const list = visible.sort((a,b)=>order(...a).localeCompare(order(...b)));
   const add=async()=>{
     const name=P.name.trim(); P.err=''; P.msg='';
     if (!name){ P.err='Enter the person’s name.'; render(); return; }
+    const fields=roleFields(P.roleV);
     P.busy=true; render();
     try {
       if (P.method==='password'){
@@ -1779,20 +1855,25 @@ function adminPeople(){
         const email = internalEmail(u);
         const uid = await createLogin(email, pw, name);
         const b=S.db.batch(); const at=nowIso();
-        b.set(S.db.doc('members/'+email), {role:P.role, name, username:u, uid, addedAt:at, addedBy:S.uid});
+        b.set(S.db.doc('members/'+email), {...fields, name, username:u, uid, addedAt:at, addedBy:S.uid});
         b.set(S.db.doc('logins/'+u), {email});
         await b.commit();
-        P.msg = `${name} can now sign in with username ${u} and password ${pw}. Give them these privately.`;
+        P.msg = `${name} is now ${roleValueLabel(P.roleV)} and can sign in with username ${u} and password ${pw}. Give them these privately.`;
       } else {
         const e=P.email.trim().toLowerCase();
         if (!/^[^@\s\/]+@[^@\s\/]+\.[^@\s\/]+$/.test(e)) throw new AppError('Enter a valid email address.');
         if (S.members[e]) throw new AppError('That person is already on the list.');
-        await S.db.doc('members/'+e).set({role:P.role, name, addedAt:nowIso(), addedBy:S.uid});
-        P.msg = `${name} can now sign in with Google or an emailed link, using ${e}.`;
+        await S.db.doc('members/'+e).set({...fields, name, addedAt:nowIso(), addedBy:S.uid});
+        P.msg = `${name} is now ${roleValueLabel(P.roleV)} and can sign in with Google or an emailed link, using ${e}.`;
       }
-      Object.assign(P, {name:'', username:'', userEdited:false, email:'', pw:'', role:'secretary'});
+      Object.assign(P, {name:'', username:'', userEdited:false, email:'', pw:''});
     } catch(x){ P.err = x instanceof AppError ? x.message : 'That person couldn’t be added. Try again.'; }
     P.busy=false; render();
+  };
+  const changeRole=async(e,m,v)=>{
+    if (v==='general' && !confirm(`Make ${m.name||e} a General Administrator? They will manage both divisions and everyone in People.`)){ render(); return; }
+    try{ await S.db.doc('members/'+e).update(roleFields(v)); toast(`${m.name||e} is now ${roleValueLabel(v)}.`); }
+    catch(x){ toast('Couldn’t change the role.'); render(); }
   };
   // A new password means a new login; the old one stops working straight away.
   const resetPassword=async(oldEmail, m)=>{
@@ -1814,17 +1895,21 @@ function adminPeople(){
     try{ const b=S.db.batch(); b.delete(S.db.doc('members/'+e)); if (m.username) b.delete(S.db.doc('logins/'+m.username)); await b.commit(); toast('Removed.'); }
     catch(x){ toast('Couldn’t remove that person.'); }
   };
-  const isPw = P.method==='password';
+  const isPw = P.method==='password'; const choices=roleChoices();
   return el('div',{class:'stack'},
-    el('p',{class:'hint',style:'margin:0;max-width:72ch'},'Only people on this list can sign in. Secretaries request Doc IDs and search records. Administrators can also manage categories, ranges, corrections, reports and this list.'),
+    el('p',{class:'hint',style:'margin:0;max-width:78ch'}, S.isGeneral
+      ? 'Only people on this list can sign in. Secretaries request Doc IDs and search records in their division. Division administrators also manage their division’s categories, ranges, corrections, reports and secretaries. General Administrators manage both divisions and choose the administrators.'
+      : `Only people on this list can sign in. You can add and manage ${divName(S.myDiv)} secretaries. To add or change an administrator, ask a General Administrator.`),
     el('div',{class:'card stack'},
       el('h2',{style:'margin:0'},'Add a person'),
       el('div',{class:'row',style:'align-items:flex-end'},
         el('div',{class:'field',style:'flex:2;min-width:200px'}, el('label',{for:'p-name'},'Name'),
           el('input',{id:'p-name', type:'text', value:P.name, autocomplete:'off', placeholder:'e.g. Maria Lopez', oninput:e=>{ P.name=e.target.value;
             if (!P.userEdited){ P.username=usernameFrom(P.name); const u=document.getElementById('p-user'); if (u) u.value=P.username; } }})),
-        el('div',{class:'field',style:'flex:1;min-width:150px'}, el('label',{for:'p-role'},'Role'),
-          el('select',{id:'p-role', value:P.role, onchange:e=>{P.role=e.target.value;}}, opt('secretary','Secretary'), opt('admin','Administrator'))),
+        el('div',{class:'field',style:'flex:1.4;min-width:230px'}, el('label',{for:'p-role'},'Role'),
+          choices.length>1
+            ? el('select',{id:'p-role', value:P.roleV, onchange:e=>{P.roleV=e.target.value;}}, choices.map(v=>opt(v, roleValueLabel(v), v===P.roleV)))
+            : el('div',{id:'p-role', style:'min-height:40px;display:flex;align-items:center;font-weight:600'}, roleValueLabel(choices[0]))),
         el('div',{class:'field',style:'flex:1;min-width:190px'}, el('label',{for:'p-method'},'Signs in with'),
           el('select',{id:'p-method', value:P.method, onchange:e=>{P.method=e.target.value; P.err=''; render();}}, opt('password','Username and password'), opt('email','Google or email link')))),
       isPw ? el('div',{class:'row',style:'align-items:flex-end'},
@@ -1840,15 +1925,16 @@ function adminPeople(){
       P.err ? el('p',{class:'err-text', role:'alert'}, P.err) : null,
       P.msg ? el('div',{class:'banner info'}, el('span',{class:'ico'}, el('i',null,'✓')), el('p',null,P.msg)) : null),
     el('div',{class:'scroll'}, el('table',null, el('thead',null, el('tr',null, ['Name','Username or email','Role','Signs in with',''].map(h=>el('th',null,h)))),
-      el('tbody',null, list.map(([e,m])=>el('tr',null, el('td',null,m.name||''), el('td',null, m.username || e),
-        el('td',null, e===S.uid ? (m.role==='admin'?'Administrator (you)':'Secretary (you)') :
-          el('select',{'aria-label':'Role for '+(m.name||e), value:m.role, onchange:async ev=>{ try{ await S.db.doc('members/'+e).update({role:ev.target.value}); toast('Role changed.'); }catch(x){ toast('Couldn’t change the role.'); } }},
-            opt('secretary','Secretary', m.role!=='admin'), opt('admin','Administrator', m.role==='admin'))),
-        el('td',null, m.username ? 'Username and password' : m.uid ? 'Email and password' : 'Google or email link'),
-        el('td',null, e===S.uid ? null : el('div',{class:'row',style:'justify-content:flex-end;flex-wrap:nowrap'},
-          m.username ? el('button',{class:'btn ghost', onclick:()=>resetPassword(e,m)},'Reset password') : null,
-          el('button',{class:'btn ghost', onclick:async()=>{ const n=prompt('Name for '+(m.name||e), m.name||''); if (n==null||!n.trim()) return; try{ await S.db.doc('members/'+e).update({name:n.trim()}); }catch(x){ toast('Couldn’t rename.'); } }},'Rename'),
-          el('button',{class:'btn ghost danger', onclick:()=>remove(e,m)},'Remove')))))))));
+      el('tbody',null, list.map(([e,m])=>{ const v=roleValue(e,m); const can=canManagePerson(e,m);
+        return el('tr',null, el('td',null,m.name||''), el('td',null, m.username || e),
+          el('td',null, S.isGeneral && can
+            ? el('select',{'aria-label':'Role for '+(m.name||e), value:v, onchange:ev=>changeRole(e,m,ev.target.value)}, roleChoices().map(x=>opt(x, roleValueLabel(x), x===v)))
+            : el('span',null, roleValueLabel(v), e===S.uid ? ' (you)' : (e===ownerEmail() ? ' (set up Doc ID Desk)' : ''))),
+          el('td',null, m.username ? 'Username and password' : m.uid ? 'Email and password' : 'Google or email link'),
+          el('td',null, !can ? null : el('div',{class:'row',style:'justify-content:flex-end;flex-wrap:nowrap'},
+            m.username ? el('button',{class:'btn ghost', onclick:()=>resetPassword(e,m)},'Reset password') : null,
+            el('button',{class:'btn ghost', onclick:async()=>{ const n=prompt('Name for '+(m.name||e), m.name||''); if (n==null||!n.trim()) return; try{ await S.db.doc('members/'+e).update({name:n.trim()}); }catch(x){ toast('Couldn’t rename.'); } }},'Rename'),
+            el('button',{class:'btn ghost danger', onclick:()=>remove(e,m)},'Remove')))); })))));
 }
 
 /* ---------- Boot ---------- */
@@ -1879,7 +1965,7 @@ function subscribe(){
 }
 function resetData(){
   S.unsubs.forEach(u=>{ try{u();}catch(e){} }); S.unsubs=[]; S.rulesBlocked=new Set();
-  Object.assign(S, {cats:{}, pools:{}, alloc:{}, rec:{}, config:{}, bank:{}, members:{}, ready:false, isAdmin:false, d:null});
+  Object.assign(S, {cats:{}, pools:{}, alloc:{}, rec:{}, config:{}, bank:{}, members:{}, ready:false, isAdmin:false, isGeneral:false, myDiv:'av', div:'av', d:null});
   for (const k of Object.keys(S.loaded)) S.loaded[k]=false;
 }
 async function enterApp(){
@@ -1893,7 +1979,14 @@ async function enterApp(){
   if (!u.emailVerified && md.uid !== u.uid){
     S.phase='noaccess'; S.noAccessMsg='This login no longer works, for example because your password was reset. Sign in again with your newest password, or ask an administrator for help.'; render(); return;
   }
-  S.isAdmin = md.role==='admin'; if (md.name) S.me.name = md.name;
+  let owner='';
+  try { const st=await S.db.doc('config/setup').get(); if (st.exists) owner=String(st.data().ownerEmail||'').toLowerCase(); } catch(e){}
+  S.isGeneral = md.role==='general' || (owner && owner===S.me.email);
+  S.isAdmin = S.isGeneral || md.role==='admin';
+  S.myDiv = memberDiv(md);
+  let pref=null; try{ pref=localStorage.getItem('docid-div'); }catch(e){}
+  S.div = S.isGeneral && DIVISIONS.some(d=>d.id===pref) ? pref : S.myDiv;
+  if (md.name) S.me.name = md.name;
   S.canWrite = true; S.phase='app'; S.view='request'; subscribe(); render();
 }
 async function boot(){

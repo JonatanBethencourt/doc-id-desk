@@ -52,10 +52,10 @@ from the security rules in the next step.
 
 ### 5. Become the administrator
 1. Open your GitHub Pages address and sign in.
-2. You'll see **Set up Doc ID Desk**. Click **Make me the administrator**.
-   Only the very first person can do this, so do it straight away after publishing.
-3. Go to **Admin → People** and add everyone else with their **name**, **role** (Secretary or
-   Administrator), a **username** (filled in from the name; you can change it) and a
+2. You'll see **Set up Doc ID Desk**. Click **Make me the administrator**. This makes you the
+   General Administrator. Only the very first person can do this, so do it straight away after publishing.
+3. Go to **Admin → People** and add everyone else with their **name**, **role** (for example
+   *Composition administrator* or *AV Distribution secretary*), a **username** (filled in from the name; you can change it) and a
    **password** (at least 8 characters; **Suggest one** makes one for you). Give each person
    their username and password privately. Only people on this list can sign in.
 4. Go to **Admin → Add a range** and create your categories, for example
@@ -81,6 +81,20 @@ If someone forgets it, an administrator clicks **Reset password** next to their 
 
 Administrators can also sign in with **Google** or a **sign-in link sent by email**, under
 **Other ways to sign in**.
+
+## Divisions and roles
+Doc ID Desk has two divisions: **AV Distribution** and **Composition**. Each has its own categories,
+records, Doc ID Bank, document types, reports and people. Anything created before divisions existed
+belongs to AV Distribution. **Doc IDs are unique across both divisions**: a range that overlaps
+Doc IDs of the other division is skipped and named when you add it.
+
+| Role | Can do |
+|---|---|
+| **General Administrator** | Everything in both divisions. Switches division with the selector next to "Doc ID Desk". The only role that can create or change administrators. The person who set up Doc ID Desk is always one. |
+| **Division administrator** (AV Distribution or Composition) | Manages their own division's categories, ranges, Doc ID Bank, corrections, reports, document types and secretaries. |
+| **Division secretary** (AV Distribution or Composition) | Requests Doc IDs and searches records in their own division. |
+
+Add people and choose their role in **Admin → People**. The database rules enforce these limits too.
 
 ## Reserving Doc IDs and releasing them
 Every Doc ID is **Reserved** from the moment it's handed out until someone clicks **Done**.
