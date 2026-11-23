@@ -609,6 +609,18 @@ function openEditCategory(id){
   const thr=el('input',{id:'ec-t', type:'number', min:0}); thr.value= c.closed ? '' : s.threshold;
   const dv=el('select',{id:'ec-d'}, DIVISIONS.map(d=>opt(d.id, d.name, d.id===catDiv(c))));
   const prev=el('span',{class:'hint'}); const err=el('p',{class:'err-text', role:'alert'});
+  const rgA=el('input',{id:'ec-ra', type:'text', inputmode:'numeric', autocomplete:'off', placeholder:'902026254'});
+  const rgB=el('input',{id:'ec-rb', type:'text', inputmode:'numeric', autocomplete:'off', placeholder:'902026899'});
+  const rgX=el('input',{id:'ec-rx', type:'text', placeholder:'e.g. 902026300-902026309, 902026450'});
+  const rgT=el('input',{id:'ec-rt', type:'checkbox'});
+  const rgPrev=el('span',{class:'hint',role:'status'});
+  const rangeInput=()=>({...S.range, first:rgA.value, last:rgB.value, exclude:rgX.value, skipTop:rgT.checked, meps:mp.checked, affix:!!(pre.value||suf.value), prefix:pre.value, suffix:suf.value, notes:''});
+  const updRange=()=>{ rgPrev.textContent=''; rgPrev.className='hint';
+    const r=buildRange(rangeInput()); if (r.empty) return;
+    if (r.error){ rgPrev.textContent=r.error; rgPrev.className='err-text'; return; }
+    const n=r.parsed.rows.filter(x=>!x.overlap).length, o=r.parsed.rows.length-n;
+    rgPrev.textContent = n ? `${plural(n,'Doc ID')} will be added${o?` (${o.toLocaleString()} already in the system will be skipped)`:''}.` : 'All of these Doc IDs are already in the system, so nothing would be added.'; };
+  [rgA,rgB,rgX,rgT,mp,pre,suf].forEach(x=>{ x.addEventListener('input',updRange); x.addEventListener('change',updRange); });
   const nextE = pool && !c.closed ? pool.arr[s.nextIdx ?? s.next] : null;
   const upd=()=>{ const on=mp.checked; pre.disabled=suf.disabled=!on;
     prev.textContent = nextE && on && /^\d+$/.test(String(nextE[0])) ? `Next MEPS number will look like: ${mepsDigits(toMeps(pre.value)+toMeps(String(nextE[0]))+toMeps(suf.value))}` : ''; };
@@ -627,6 +639,15 @@ function openEditCategory(id){
       el('span',{class:'hint'}, 'Type [DC#] and [PBDT] for those MEPS markup characters. Digits become MEPS digits.'),
       prev,
       el('div',{class:'field'}, el('label',{for:'ec-no'},'Notes (one per line)'), notes),
+      c.closed ? null : el('fieldset',{class:'stack',style:'border:1px solid var(--line,#ccc);border-radius:8px;padding:10px 12px;margin:0'},
+        el('legend',null,'Add more Doc IDs (optional)'),
+        el('span',{class:'hint'},'Extend this category with a new range of numbers. They are added directly; you don’t need to put them in the Doc ID Bank first. Leave empty to change nothing.'),
+        el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:10px'},
+          el('div',{class:'field'}, el('label',{for:'ec-ra'},'First Doc ID'), rgA),
+          el('div',{class:'field'}, el('label',{for:'ec-rb'},'Last Doc ID'), rgB)),
+        el('label',{class:'row',style:'gap:8px;cursor:pointer'}, rgT, 'Leave out numbers ending in 900–999'),
+        el('div',{class:'field'}, el('label',{for:'ec-rx'},'Also leave out (optional)'), rgX),
+        rgPrev),
       c.closed ? null : el('div',{class:'field',style:'max-width:240px'}, el('label',{for:'ec-t'},'Warn when this many are left'), thr),
       S.isGeneral ? el('div',{class:'field',style:'max-width:280px'}, el('label',{for:'ec-d'},'Division'), dv,
         el('span',{class:'hint'},'Moving a category moves its records and remaining Doc IDs with it.')) : null,
@@ -652,6 +673,16 @@ function openEditCategory(id){
     if (!c.closed && t!==s.threshold) ch.push(`warning level → ${t}`);
     const nd = S.isGeneral ? dv.value : catDiv(c);
     if (nd!==catDiv(c)) ch.push(`division ${divName(catDiv(c))} → ${divName(nd)}`);
+    let addRows=null, addSrc=null;
+    if (!c.closed && (rgA.value.trim() || rgB.value.trim())){
+      const r=buildRange(rangeInput());
+      if (r.empty){ err.textContent='Enter both the first and last Doc ID to add a range, or clear them.'; return; }
+      if (r.error){ err.textContent=r.error; return; }
+      addRows=r.parsed.rows.filter(x=>!x.overlap);
+      if (!addRows.length){ err.textContent='All of these Doc IDs are already in the system, so there is nothing to add.'; return; }
+      addSrc=`Range ${r.first}–${r.last}`;
+      ch.push(`added ${plural(addRows.length,'Doc ID')} (${addRows[0].reg}–${addRows[addRows.length-1].reg})`);
+    }
     if (!ch.length){ close(); return; }
     const mepsChanged = hasMeps!==!!c.hasMeps || toMeps(p)!==toMeps(c.mepsPrefix||'') || toMeps(sx)!==toMeps(c.mepsSuffix||'');
     const at=nowIso();
@@ -660,8 +691,23 @@ function openEditCategory(id){
     if (nd!==catDiv(c)) patch.division=nd;
     if (!c.closed) patch.lowThreshold=t;
     saveB.disabled=true;
-    try { await S.db.doc('categories/'+id).update(patch); close(); toast(nd!==catDiv(c) ? `Category moved to ${divName(nd)}.` : 'Category saved.'); }
-    catch(x){ err.textContent='The changes couldn’t be saved. Try again.'; saveB.disabled=false; }
+    try {
+      if (addRows){
+        const ids=addRows.map(r=>[r.reg, r.meps||'']); const catRef=S.db.doc('categories/'+id);
+        const source={name:addSrc, importedAt:at, importedBy:S.uid, importedByName:myName(), count:ids.length, first:ids[0][0], last:ids[ids.length-1][0],
+          mepsPrefix:hasMeps?p:'', mepsSuffix:hasMeps?sx:''};
+        await S.db.runTransaction(async tx=>{
+          const snap=await tx.get(catRef); if (!snap.exists) throw new AppError('This category no longer exists.');
+          const cur=snap.data(); if (cur.closed) throw new AppError('This category has been closed.');
+          const chunks=[];
+          for (let i=0;i<ids.length;i+=POOL_CHUNK){ const pid=id+'__p'+rid(); const part=ids.slice(i,i+POOL_CHUNK);
+            tx.set(S.db.doc('pool/'+pid), {catId:id, regs:part.map(x=>x[0]), meps:part.map(x=>x[1])}); chunks.push({id:pid, count:part.length}); }
+          tx.update(catRef, {...patch, total:(cur.total||0)+ids.length, chunks:[...(cur.chunks||[]), ...chunks], sourceFiles:[...(cur.sourceFiles||[]), source]});
+        });
+        close(); toast(`Category saved. ${plural(ids.length,'Doc ID')} added.`, 5000); return;
+      }
+      await S.db.doc('categories/'+id).update(patch); close(); toast(nd!==catDiv(c) ? `Category moved to ${divName(nd)}.` : 'Category saved.'); }
+    catch(x){ err.textContent = x instanceof AppError ? x.message : 'The changes couldn’t be saved. Try again.'; saveB.disabled=false; }
   }
 }
 function openReopenModal(id){
