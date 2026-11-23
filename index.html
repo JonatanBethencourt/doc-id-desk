@@ -599,6 +599,40 @@ async function reopenCategory(catId){
     return back.length;
   });
 }
+/* Rewrite a category's range: Doc IDs already handed out (or released back) stay exactly as they are;
+   everything not yet handed out is replaced by the new rows. Nothing goes to the Doc ID Bank. */
+async function replaceUnused(catId, rows, srcName, patch){
+  const catRef=S.db.doc('categories/'+catId), allocRef=S.db.doc('alloc/'+catId);
+  const sig = c => (c.chunks||[]).map(x=>x.id).join(',');
+  const c0=await catRef.get(); if (!c0.exists) throw new AppError('This category no longer exists.');
+  let loaded=c0.data(), pool=await freshPool(loaded);
+  return S.db.runTransaction(async tx=>{
+    const cs=await tx.get(catRef); if (!cs.exists) throw new AppError('This category no longer exists.');
+    const c=normCat(cs.data()); if (c.closed) throw new AppError('This category has been closed.');
+    if (sig(c)!==sig(loaded) || (c.total||0)!==pool.length){ loaded=c; pool=await freshPool(c); }
+    const as=await tx.get(allocRef); let next=as.exists?(as.data().next||0):0;
+    for (let ch=Math.floor(next/REC_CHUNK); ch<=Math.floor((pool.length-1)/REC_CHUNK); ch++){
+      const rs=await tx.get(recRefFor(catId,ch));
+      if (rs.exists) for (const e of Object.values(rs.data().entries||{})) if (e.idx>=next) next=e.idx+1;
+    }
+    const keep=Math.min(next, pool.length), removed=pool.length-keep;
+    const kept=[]; let pos=0;
+    for (const ch of c.chunks||[]){
+      const end=pos+(ch.count||0);
+      if (end<=keep) kept.push(ch);
+      else if (pos<keep){ const part=pool.slice(pos,keep); const id=catId+'__p'+rid();
+        tx.set(S.db.doc('pool/'+id), {catId, regs:part.map(x=>x[0]), meps:part.map(x=>x[1])}); kept.push({id, count:part.length}); }
+      pos=end;
+    }
+    const ids=rows.map(r=>[r.reg, r.meps||'']); const at=nowIso();
+    for (let i=0;i<ids.length;i+=POOL_CHUNK){ const id=catId+'__p'+rid(); const part=ids.slice(i,i+POOL_CHUNK);
+      tx.set(S.db.doc('pool/'+id), {catId, regs:part.map(x=>x[0]), meps:part.map(x=>x[1])}); kept.push({id, count:part.length}); }
+    const source={name:srcName+' (replaced the unused Doc IDs)', importedAt:at, importedBy:S.uid, importedByName:myName(), count:ids.length, first:ids[0][0], last:ids[ids.length-1][0],
+      mepsPrefix:patch.mepsPrefix||'', mepsSuffix:patch.mepsSuffix||'', replaced:removed};
+    tx.update(catRef, {...patch, total:keep+ids.length, chunks:kept, sourceFiles:[...(c.sourceFiles||[]), source]});
+    return {removed, added:ids.length};
+  });
+}
 function openEditCategory(id){
   const c=S.cats[id]; const s=derive().stats[id]; const pool=derive().pools[id]; const root=document.getElementById('modal-root');
   const nm=el('input',{id:'ec-n', type:'text'}); nm.value=c.name;
@@ -609,6 +643,24 @@ function openEditCategory(id){
   const thr=el('input',{id:'ec-t', type:'number', min:0}); thr.value= c.closed ? '' : s.threshold;
   const dv=el('select',{id:'ec-d'}, DIVISIONS.map(d=>opt(d.id, d.name, d.id===catDiv(c))));
   const prev=el('span',{class:'hint'}); const err=el('p',{class:'err-text', role:'alert'});
+  const rgA=el('input',{id:'ec-ra', type:'text', inputmode:'numeric', autocomplete:'off', placeholder:'902026254'});
+  const rgB=el('input',{id:'ec-rb', type:'text', inputmode:'numeric', autocomplete:'off', placeholder:'902026899'});
+  const rgX=el('input',{id:'ec-rx', type:'text', placeholder:'e.g. 902026300-902026309, 902026450'});
+  const rgT=el('input',{id:'ec-rt', type:'checkbox'});
+  const rgPrev=el('span',{class:'hint',role:'status'});
+  const rgM=el('select',{id:'ec-rm'}, opt('add','Add to the end of this category'), opt('replace','Replace the Doc IDs not handed out yet'));
+  const unusedN = pool && !c.closed ? Math.max(0, pool.arr.length-s.next) : 0;
+  const ignoreFor=()=> rgM.value==='replace' ? {catId:id, from:s.next} : undefined;
+  const rangeInput=()=>({...S.range, first:rgA.value, last:rgB.value, exclude:rgX.value, skipTop:rgT.checked, meps:mp.checked, affix:!!(pre.value||suf.value), prefix:pre.value, suffix:suf.value, notes:''});
+  const updRange=()=>{ rgPrev.textContent=''; rgPrev.className='hint';
+    const r=buildRange(rangeInput(), ignoreFor()); if (r.empty) return;
+    if (r.error){ rgPrev.textContent=r.error; rgPrev.className='err-text'; return; }
+    const n=r.parsed.rows.filter(x=>!x.overlap).length, o=r.parsed.rows.length-n;
+    const rp=rgM.value==='replace';
+    rgPrev.textContent = !n ? 'All of these Doc IDs are already in the system, so nothing would be changed.'
+      : rp ? `${plural(unusedN,'unused Doc ID')} will be removed and replaced by ${plural(n,'Doc ID')}${o?` (${o.toLocaleString()} already in the system skipped)`:''}. Nothing goes to the Doc ID Bank.`
+      : `${plural(n,'Doc ID')} will be added${o?` (${o.toLocaleString()} already in the system will be skipped)`:''}.`; };
+  [rgA,rgB,rgX,rgT,rgM,mp,pre,suf].forEach(x=>{ x.addEventListener('input',updRange); x.addEventListener('change',updRange); });
   const nextE = pool && !c.closed ? pool.arr[s.nextIdx ?? s.next] : null;
   const upd=()=>{ const on=mp.checked; pre.disabled=suf.disabled=!on;
     prev.textContent = nextE && on && /^\d+$/.test(String(nextE[0])) ? `Next MEPS number will look like: ${mepsDigits(toMeps(pre.value)+toMeps(String(nextE[0]))+toMeps(suf.value))}` : ''; };
@@ -627,6 +679,17 @@ function openEditCategory(id){
       el('span',{class:'hint'}, 'Type [DC#] and [PBDT] for those MEPS markup characters. Digits become MEPS digits.'),
       prev,
       el('div',{class:'field'}, el('label',{for:'ec-no'},'Notes (one per line)'), notes),
+      c.closed ? null : el('fieldset',{class:'stack',style:'border:1px solid var(--line,#ccc);border-radius:8px;padding:10px 12px;margin:0'},
+        el('legend',null,'Change the range of Doc IDs (optional)'),
+        el('span',{class:'hint'}, `Currently ${plural(unusedN,'Doc ID')} not handed out yet${unusedN&&pool?` (${pool.arr[s.next][0]} to ${pool.arr[pool.arr.length-1][0]})`:''}. Doc IDs already handed out are never changed. Leave First and Last empty to change nothing.`),
+        el('div',{class:'field'}, el('label',{for:'ec-rm'},'What to do with the new range'), rgM,
+          el('span',{class:'hint'},'“Replace” fixes a range created by mistake: the Doc IDs not handed out yet are swapped for the new range, without using the Doc ID Bank.')),
+        el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:10px'},
+          el('div',{class:'field'}, el('label',{for:'ec-ra'},'First Doc ID'), rgA),
+          el('div',{class:'field'}, el('label',{for:'ec-rb'},'Last Doc ID'), rgB)),
+        el('label',{class:'row',style:'gap:8px;cursor:pointer'}, rgT, 'Leave out numbers ending in 900–999'),
+        el('div',{class:'field'}, el('label',{for:'ec-rx'},'Also leave out (optional)'), rgX),
+        rgPrev),
       c.closed ? null : el('div',{class:'field',style:'max-width:240px'}, el('label',{for:'ec-t'},'Warn when this many are left'), thr),
       S.isGeneral ? el('div',{class:'field',style:'max-width:280px'}, el('label',{for:'ec-d'},'Division'), dv,
         el('span',{class:'hint'},'Moving a category moves its records and remaining Doc IDs with it.')) : null,
@@ -652,6 +715,17 @@ function openEditCategory(id){
     if (!c.closed && t!==s.threshold) ch.push(`warning level → ${t}`);
     const nd = S.isGeneral ? dv.value : catDiv(c);
     if (nd!==catDiv(c)) ch.push(`division ${divName(catDiv(c))} → ${divName(nd)}`);
+    let addRows=null, addSrc=null;
+    if (!c.closed && (rgA.value.trim() || rgB.value.trim())){
+      const r=buildRange(rangeInput(), ignoreFor());
+      if (r.empty){ err.textContent='Enter both the first and last Doc ID, or clear them.'; return; }
+      if (r.error){ err.textContent=r.error; return; }
+      addRows=r.parsed.rows.filter(x=>!x.overlap);
+      if (!addRows.length){ err.textContent='All of these Doc IDs are already in the system, so there is nothing to add.'; return; }
+      addSrc=`Range ${r.first}–${r.last}`;
+      ch.push(rgM.value==='replace' ? `replaced ${plural(unusedN,'unused Doc ID')} with ${plural(addRows.length,'Doc ID')} (${addRows[0].reg}–${addRows[addRows.length-1].reg})`
+        : `added ${plural(addRows.length,'Doc ID')} (${addRows[0].reg}–${addRows[addRows.length-1].reg})`);
+    }
     if (!ch.length){ close(); return; }
     const mepsChanged = hasMeps!==!!c.hasMeps || toMeps(p)!==toMeps(c.mepsPrefix||'') || toMeps(sx)!==toMeps(c.mepsSuffix||'');
     const at=nowIso();
@@ -660,8 +734,27 @@ function openEditCategory(id){
     if (nd!==catDiv(c)) patch.division=nd;
     if (!c.closed) patch.lowThreshold=t;
     saveB.disabled=true;
-    try { await S.db.doc('categories/'+id).update(patch); close(); toast(nd!==catDiv(c) ? `Category moved to ${divName(nd)}.` : 'Category saved.'); }
-    catch(x){ err.textContent='The changes couldn’t be saved. Try again.'; saveB.disabled=false; }
+    try {
+      if (addRows && rgM.value==='replace'){
+        const res=await replaceUnused(id, addRows, addSrc, patch);
+        close(); toast(`Category saved. ${plural(res.removed,'unused Doc ID')} replaced by ${plural(res.added,'Doc ID')}.`, 6000); return;
+      }
+      if (addRows){
+        const ids=addRows.map(r=>[r.reg, r.meps||'']); const catRef=S.db.doc('categories/'+id);
+        const source={name:addSrc, importedAt:at, importedBy:S.uid, importedByName:myName(), count:ids.length, first:ids[0][0], last:ids[ids.length-1][0],
+          mepsPrefix:hasMeps?p:'', mepsSuffix:hasMeps?sx:''};
+        await S.db.runTransaction(async tx=>{
+          const snap=await tx.get(catRef); if (!snap.exists) throw new AppError('This category no longer exists.');
+          const cur=snap.data(); if (cur.closed) throw new AppError('This category has been closed.');
+          const chunks=[];
+          for (let i=0;i<ids.length;i+=POOL_CHUNK){ const pid=id+'__p'+rid(); const part=ids.slice(i,i+POOL_CHUNK);
+            tx.set(S.db.doc('pool/'+pid), {catId:id, regs:part.map(x=>x[0]), meps:part.map(x=>x[1])}); chunks.push({id:pid, count:part.length}); }
+          tx.update(catRef, {...patch, total:(cur.total||0)+ids.length, chunks:[...(cur.chunks||[]), ...chunks], sourceFiles:[...(cur.sourceFiles||[]), source]});
+        });
+        close(); toast(`Category saved. ${plural(ids.length,'Doc ID')} added.`, 5000); return;
+      }
+      await S.db.doc('categories/'+id).update(patch); close(); toast(nd!==catDiv(c) ? `Category moved to ${divName(nd)}.` : 'Category saved.'); }
+    catch(x){ err.textContent = x instanceof AppError ? x.message : 'The changes couldn’t be saved. Try again.'; saveB.disabled=false; }
   }
 }
 function openReopenModal(id){
@@ -799,10 +892,11 @@ function parseWorkbook(wb, fileName){
   return {name: name || fileName.replace(/\.[^.]+$/,''), notes:[...new Set(notes)], rows, hasMeps: mepsCol>=0,
           headerRegular, headerMeps, sheetName, extraSheets: sheets.length-1};
 }
-function checkOverlap(parsed){
+function checkOverlap(parsed, ignore){
   const {pools} = derive(); const owner = new Map();
   for (const [cid,p] of Object.entries(pools)){
-    const c=S.cats[cid]; const upto = c && c.closed ? (c.closedNext||0) : p.arr.length;
+    const c=S.cats[cid]; let upto = c && c.closed ? (c.closedNext||0) : p.arr.length;
+    if (ignore && ignore.catId===cid) upto=Math.min(upto, ignore.from);   // Doc IDs about to be replaced don't count as taken
     for (let i=0;i<upto;i++) owner.set(String(p.arr[i][0]), cid);
   }
   for (const d of Object.values(S.bank)){ const k = depDiv(d)===S.div ? 'bank' : 'bank:'+depDiv(d); for (const r of d.regs||[]) owner.set(String(r), k); }
@@ -871,7 +965,7 @@ function parseRangeList(text, width){
   }
   return {list:out};
 }
-function buildRange(R){
+function buildRange(R, ignore){
   const first=R.first.trim(), last=R.last.trim();
   if (!first || !last) return {empty:true};
   if (!/^\d+$/.test(first) || !/^\d+$/.test(last)) return {error:'Doc IDs in a range must be whole numbers, digits only.'};
@@ -898,7 +992,7 @@ function buildRange(R){
   const notes = R.notes.split('\n').map(t=>t.trim()).filter(Boolean);
   const parsed = {name:R.name.trim(), notes, rows, hasMeps:R.meps, headerRegular:'Regular Numbers', headerMeps:'MEPS Numbers', sheetName:'', extraSheets:0,
     mepsPrefix: useAffix ? R.prefix : '', mepsSuffix: useAffix ? R.suffix : ''};
-  checkOverlap(parsed);
+  checkOverlap(parsed, ignore);
   return {parsed, skipped, first, last};
 }
 
